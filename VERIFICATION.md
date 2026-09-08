@@ -84,3 +84,10 @@ Tests: an unobstructed 256-unit route completes in one 12-segment update with ze
 Release build passes. Unit checks cover world-space yaw/pitch and attack gating for range, obstruction, movement, menu state and dead targets. Navigation and input regressions pass. Attack requests use mapped native input, allowing the game to handle firing animations and ammunition. Physical attack remains disabled while script input is enabled only for the attack control owned by this plugin.
 
 Live projectile direction, ammo consumption, sustained fire, melee reach, approach routes, cancellation and VATS handoff still require playtesting after the DLL reload. Native VATS target preselection is not implemented. Do not treat compile/unit success as proof of working combat.
+
+
+## Continuous route following and replacement
+
+The active Follower route is now separate from the Search being calculated. Retargeting preserves walking input and the existing route; replacements must join from the current player position through a freshly checked corridor before installation. Nearby goals can replace a short route directly or extend its end. Shortcuts are checked before skipping waypoints. A 350 ms look-ahead detects changes beyond the immediate segment and starts a replacement while movement continues. Immediate obstruction, exhaustion of the safe path, explicit cancellation or unrecoverable stalls still stop movement. Stalls receive up to three repair attempts. Search caches remain per-search; stale cross-search collision results are not reused.
+
+Release build and follower tests pass: active-route retention during a pending search, progress during planning, blocked-join retention, current-position adoption, local adjustment, blocked-shortcut rejection and explicit cancellation. Existing path, combat, camera and wheel regressions pass. Live movement continuity remains to be checked after restart. Combat baseline committed locally as 652c47c; this follow-up is uncommitted.
