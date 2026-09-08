@@ -24,7 +24,12 @@ public:
  }
  template<class Clear> bool adjust(engine::Vec pos,engine::Vec goal,Clear clear){
   if(engine::length(goal-pos)<=192&&clear(pos,goal)){points={goal};cursor=0;return true;}
-  if(!done()&&engine::length(points.back()-goal)<=128&&clear(points.back(),goal)){points.push_back(goal);return true;}
+  if(!done()&&engine::length(points.back()-goal)<=128){
+   float retained=engine::length(points[cursor]-pos)+engine::length(points.back()-goal);
+   for(size_t i=cursor+1;i<points.size();i++)retained+=engine::length(points[i]-points[i-1]);
+   // Nearby endpoints alone do not justify keeping a long old detour.
+   if(retained<=engine::length(goal-pos)*1.35f+64&&clear(points.back(),goal)){points.push_back(goal);return true;}
+  }
   return false;
  }
  template<class Clear> void shortcut(engine::Vec pos,Clear clear){

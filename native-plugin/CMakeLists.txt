@@ -30,3 +30,6 @@ target_compile_features(MojaveIsoCombatTests PRIVATE cxx_std_20)
 
 add_executable(MojaveIsoFollowerTests tests/route_follower_tests.cpp)
 target_compile_features(MojaveIsoFollowerTests PRIVATE cxx_std_20)
+
+add_executable(MojaveIsoNavmeshTests tests/navmesh_tests.cpp)
+target_compile_features(MojaveIsoNavmeshTests PRIVATE cxx_std_20)

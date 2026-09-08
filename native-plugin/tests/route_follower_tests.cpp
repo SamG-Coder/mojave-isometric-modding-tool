@@ -19,6 +19,10 @@ int main(){
  check(f.adjust({90,0,0},{160,0,0},clear)&&f.points.back().x==160,"Small destination adjustment failed");
  f.points={{32,0,0},{32,32,0},{64,32,0}};f.cursor=0;f.shortcut({0,0,0},blocked);check(f.cursor==0,"Shortcut cut blocked corner");
  f.shortcut({0,0,0},clear);check(f.cursor==2,"Clear route was not shortened");
+ f.points={{0,500,0},{500,500,0},{500,0,0}};f.cursor=0;
+ check(!f.adjust({0,0,0},{510,0,0},clear)&&f.points.size()==3,"Nearby click retained an excessive old detour");
+ f.points={{250,0,0},{500,0,0}};f.cursor=0;
+ check(f.adjust({0,0,0},{510,0,0},clear),"Efficient route extension was rejected");
  f.clear();check(f.done(),"Explicit cancel kept route active");
  std::cout<<"Concurrent route retention, moving joins, reuse, blocked joins and shortcut tests passed.\n";
 }

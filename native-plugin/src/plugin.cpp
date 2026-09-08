@@ -18,12 +18,13 @@
 #include "cutaway.hpp"
 #include "combat_math.hpp"
 #include "route_follower.hpp"
+#include "native_navigation.hpp"
 using namespace engine;
 namespace {
 struct AttackOrder {uint32_t id{};Vec point{};void* cell{};bool ordered{},single{},held{};uint64_t started{},lastFire{},lastRepath{},lastReady{};unsigned approach{};} attack;
 bool altAiming{},lastVats{};float priorAimPitch{};bool aimOwned{};uint64_t attackRequests{};
 void cancelCombat();void combatTick();void attackClick(float,float);
-navigation::Search route;navigation::Follower follower;uint64_t routeReuses{},routeSwaps{};unsigned stuckRepairs{};size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};
+navigation::Search route;navigation::Follower follower;uint64_t routeReuses{},routeSwaps{};unsigned stuckRepairs{};size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};double plannerCpuMs{},lastPlannerStepMs{};unsigned plannerSteps{};size_t nativeTriangles{};unsigned nativeExpanded{};double nativePlanningMs{};std::string navigationSource="grid";
 struct NearbyAction{uint32_t id;Vec pos;std::string text;float range;};std::vector<NearbyAction> nearby;
 struct ActionBox{uint32_t id;float x,y,w,h;};std::vector<ActionBox> actionBoxes;
 struct MapCell{Vec p;int state=0;};std::array<MapCell,1024> mapCells{};Vec mapOrigin{};size_t mapIndex{};bool mapReady{};
@@ -299,14 +300,23 @@ void resumeWalking(){
     if(heldForward<0||heldForward>=255){heldForward=-1;note="Bind forward movement to a keyboard key";return;}
     run("HoldKey "+std::to_string(heldForward));moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=at<Vec>(player(),0x30);
 }
+bool tryNativeRoute(Vec pos){
+    std::vector<Vec> path;auto started=std::chrono::steady_clock::now();
+    bool found=native_navigation::plan(pos,target,interactionId?150.f:60.f,path,nativeTriangles,nativeExpanded);
+    nativePlanningMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+    if(!found||!follower.adopt(path,pos,corridorClear))return false;
+    route.cancel();navigationSource="navmesh";++routeSwaps;lastPlanningMs=uint64_t(nativePlanningMs);resumeWalking();note="Following native navigation mesh";return true;
+}
 void planDestination(Vec hit,uint32_t id){
     stuckRepairs=0;moveStarted=GetTickCount64();target=hit;interactionId=id;pendingActivation=false;markerUntil=GetTickCount64()+3000;
     auto pos=at<Vec>(player(),0x30);
     // Small adjustments can splice into the validated route without an A* restart.
     if(!id&&follower.adjust(pos,hit,corridorClear)){
-        route.cancel();++routeReuses;resumeWalking();note="Adjusted existing route";return;
+        route.cancel();navigationSource="route_reuse";++routeReuses;resumeWalking();note="Adjusted existing route";return;
     }
-    route.begin(pos,target,id?100.f:20.f);routeStarted=GetTickCount64();
+    if(tryNativeRoute(pos))return;
+    navigationSource="grid_fallback";
+    route.begin(pos,target,id?100.f:20.f);routeStarted=GetTickCount64();plannerCpuMs=0;plannerSteps=0;
     note=moving?"Updating route while walking":"Planning route";
 }
 void nearbyDestination(uint32_t id){cancelCombat();auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
@@ -315,7 +325,7 @@ void beginWalking(){
     if(!follower.adopt(route.path,pos,corridorClear)){
         // The player may have advanced while the search ran. Rebase the pending
         // search without destroying the active path or releasing movement.
-        route.begin(pos,target,interactionId?100.f:20.f);routeStarted=GetTickCount64();return;
+        navigationSource="grid_repair";route.begin(pos,target,interactionId?100.f:20.f);routeStarted=GetTickCount64();plannerCpuMs=0;plannerSteps=0;return;
     }
     ++routeSwaps;resumeWalking();note=interactionId?"Following route to interaction":"Following updated route";
 }
@@ -343,9 +353,12 @@ void destination(float x,float y){
 void walk(){
     if(route.state==navigation::Search::State::Searching){
         if(!active()){stopMovement();return;}
+        auto planningStart=std::chrono::steady_clock::now();
         route.step(groundProbe,corridorClear,12,2.f);
+        lastPlannerStepMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-planningStart).count();
+        plannerCpuMs+=lastPlannerStepMs;++plannerSteps;
         if(route.state==navigation::Search::State::Found)beginWalking();
-        else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){route.cancel();note="Replacement route unavailable; finishing safe route";}
+        else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){lastPlanningMs=GetTickCount64()-routeStarted;route.cancel();note="Replacement route unavailable; finishing safe route";}
     }
     if(!moving)return;if(!active()){stopMovement();return;}
     Vec pos=at<Vec>(player(),0x30),delta=target-pos;
@@ -361,7 +374,7 @@ void walk(){
     if(now-moveStarted>120000){stopMovement();note="Movement order timed out";return;}
     if(now-lastProgress>1800){
         if(++stuckRepairs>3){stopMovement();note="Unable to recover blocked movement";return;}
-        pauseWalking();route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;note="Repairing stalled route";return;
+        pauseWalking();navigationSource="grid_repair";route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;plannerCpuMs=0;plannerSteps=0;note="Repairing stalled route";return;
     }
     follower.advance(pos);
     if(follower.done()){
@@ -374,7 +387,7 @@ void walk(){
         if(!corridorClear(pos,pos+normalized(delta)*std::min(35.f,length(delta)))){
             // Stop only when the immediate corridor is physically blocked.
             pauseWalking();
-            if(route.state!=navigation::Search::State::Searching){route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;}
+            if(route.state!=navigation::Search::State::Searching){navigationSource="grid_repair";route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;plannerCpuMs=0;plannerSteps=0;}
             note="Immediate path blocked; finding detour";return;
         }
     }
@@ -383,7 +396,7 @@ void walk(){
     if(now-lastLookAhead>=350&&route.state!=navigation::Search::State::Searching){lastLookAhead=now;
         size_t next=follower.cursor+1;
         if(next<follower.points.size()&&!corridorClear(follower.points[follower.cursor],follower.points[next])){
-            route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;note="Repairing route ahead while walking";
+            navigationSource="grid_repair";route.begin(pos,target,interactionId?100.f:20.f);routeStarted=now;plannerCpuMs=0;plannerSteps=0;note="Repairing route ahead while walking";
         }
     }
     at<float>(player(),0x2c)=atan2f(delta.x,delta.y);
@@ -393,14 +406,38 @@ bool combatActor(void* ref){
     if(!ref||ref==player())return false;auto type=at<uint8_t>(ref,4);
     return (type==0x3B||type==0x3C)&&!(at<uint32_t>(ref,8)&0x820)&&at<uint32_t>(ref,0x108)!=1&&at<uint32_t>(ref,0x108)!=2;
 }
+void* namedBone(void* node,const char* wanted,unsigned depth=0){
+    if(!node||depth>32)return nullptr;
+    auto name=at<const char*>(node,8);if(name&&!std::strcmp(name,wanted))return node;
+    // NiNode::GetAsNiNode returns this; geometry uses the null implementation.
+    auto table=at<uintptr_t*>(node,0);if(table[3]!=0x6815C0)return nullptr;
+    auto children=at<void**>(node,0xA0);auto count=at<uint16_t>(node,0xA6);if(!children||count>512)return nullptr;
+    for(unsigned i=0;i<count;i++)if(auto found=namedBone(children[i],wanted,depth+1))return found;
+    return nullptr;
+}
+void* actorRoot(void* ref){auto render=ref?at<void*>(ref,0x64):nullptr;return render?at<void*>(render,0x14):nullptr;}
+bool validActorPoint(Vec point,Vec feet){return std::isfinite(point.x)&&std::isfinite(point.y)&&std::isfinite(point.z)&&length(point-feet)<400;}
 Vec bodyPoint(void* ref){
-    auto pos=at<Vec>(ref,0x30);auto render=at<void*>(ref,0x64);auto node=render?at<void*>(render,0x14):nullptr;auto bound=node?at<void*>(node,0x20):nullptr;
-    if(bound){auto centre=at<Vec>(bound,0);if(length(centre-pos)<250)return centre;}
+    auto pos=at<Vec>(ref,0x30);auto node=actorRoot(ref);
+    // Animated torso position follows crouching and body motion. Scene bounds
+    // can include equipment and are only a fallback for non-humanoid rigs.
+    if(auto torso=namedBone(node,"Bip01 Spine2")){auto point=at<Vec>(torso,0x8C);if(validActorPoint(point,pos))return point;}
+    auto bound=node?at<void*>(node,0x20):nullptr;
+    if(bound){auto centre=at<Vec>(bound,0);if(validActorPoint(centre,pos))return centre;}
     return pos+Vec{0,0,65};
+}
+Vec firingOrigin(){
+    auto pos=at<Vec>(player(),0x30);auto process=at<void*>(player(),0x68);
+    if(process&&at<uint8_t>(process,0x28)<=1&&at<uint8_t>(process,0x135)){
+        auto projectileNode=at<void*>(process,0x130);
+        if(projectileNode){auto muzzle=at<Vec>(projectileNode,0x8C);if(validActorPoint(muzzle,pos))return muzzle;}
+    }
+    if(auto head=namedBone(actorRoot(player()),"Bip01 Head")){auto eye=at<Vec>(head,0x8C);if(validActorPoint(eye,pos))return eye;}
+    return pos+Vec{0,0,95};
 }
 void facePoint(Vec point){
     if(!aimOwned){priorAimPitch=at<float>(player(),0x24);aimOwned=true;}
-    auto aim=combat::aim(at<Vec>(player(),0x30)+Vec{0,0,95},point);
+    auto aim=combat::aim(firingOrigin(),point);
     at<float>(player(),0x2C)=aim.yaw;at<float>(player(),0x24)=std::clamp(aim.pitch,-1.35f,1.35f);
 }
 bool shotClear(Vec from,Vec to,void* victim){
@@ -436,7 +473,7 @@ void combatTick(){
     float range=melee?(weapon?at<float>(weapon,0xFC)*100.f:95.f):(weapon?at<float>(weapon,0x124):1200.f);
     if(!std::isfinite(range)||range<=0)range=melee?95.f:1200.f;
     range=std::clamp(range,60.f,5000.f);
-    auto pos=at<Vec>(player(),0x30),eye=pos+Vec{0,0,95};float targetDistance=length(attack.point-eye);
+    auto pos=at<Vec>(player(),0x30),eye=firingOrigin();float targetDistance=length(attack.point-eye);
     bool clear=shotClear(eye,attack.point,victim);
     if(targetDistance>range||!clear){
         releaseAttack();if(attack.single){stop();note="Shot is blocked or out of range";return;}
@@ -470,7 +507,7 @@ void combatTick(){
 }
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
-    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
+    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"planner_cpu_ms\":"<<plannerCpuMs<<",\"planner_step_ms\":"<<lastPlannerStepMs<<",\"planner_updates\":"<<plannerSteps<<",\"navigation_source\":\""<<navigationSource<<"\",\"native_triangles\":"<<nativeTriangles<<",\"native_expanded\":"<<nativeExpanded<<",\"native_planning_ms\":"<<nativePlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);

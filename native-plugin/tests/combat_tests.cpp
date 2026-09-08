@@ -15,5 +15,9 @@ int main(){
  check(!combat::canAttack(100,200,true,true,true,true),"Moving attack accepted");
  check(!combat::canAttack(100,200,true,false,false,true),"Menu attack accepted");
  check(!combat::canAttack(100,200,true,false,true,false),"Dead target attack accepted");
+ auto muzzleAim=combat::aim({20,0,70},{100,100,70});
+ check(std::abs(muzzleAim.pitch)<.001f,"Level muzzle-to-torso shot aims vertically");
+ check(std::abs(muzzleAim.yaw-std::atan2(80.f,100.f))<.001f,"Muzzle lateral offset ignored");
+ auto crouched=combat::aim({20,0,70},{100,100,40});check(crouched.pitch>0,"Lower torso target not tracked");
  std::cout<<"World aim and combat gating checks passed.\n";
 }
