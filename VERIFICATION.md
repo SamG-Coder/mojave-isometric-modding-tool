@@ -41,3 +41,23 @@ The reported physical mouse-wheel to first-person threshold sequence still needs
 Committed input changes isolate mouse X/Y deltas as well as wheel input from vanilla look. Middle drag changes yaw and pitch with smoothing and pitch limits. Pick rays use the last displayed renderer camera; destination markers use the current renderer camera. Ground validation retains the original hit point. Pointer/marker colour follows uHUDColor. Reticle image visibility is temporarily hidden and restored when releasing gameplay ownership.
 
 Validated: Release build, 1,176 pixel-to-world-to-pixel checks across pitch/yaw, orthographic/perspective and nonzero viewport offsets, and existing wheel regression checks. The final installed DLL hash matches the built DLL. Captured in-game imagery shows the amber marker/pointer and no centre crosshair. Live click diagnostics reported reprojection errors of 0.000533 and 0.003386 pixels. Live camera diagnostics showed pitch 30 degrees with changed yaw. This measures projection alignment; collision geometry can still differ from visible meshes, and obstacle navigation remains a separate limitation.
+
+
+## Version 0.6 correction status
+
+The initial fixed action list and collision-grid minimap were rejected during playtesting and have been removed from the active HUD. A native TileText prompt now loads through the engine UI system and copies the vanilla activation-text font and colours. It is shown only for a hovered reference within 350 units, with a 150-unit height limit and matching parent cell. Native tile creation was confirmed in the live log; final prompt positioning and clicking still need visual validation.
+
+The experimental BSCullingProcess plane override and per-geometry stencil cutaway are disabled after missing geometry was reported. The orthographic plane mathematics pass corner and outside-plane tests, but this does not establish integration correctness. Missing player geometry also appeared in a capture after these hooks were disabled. Read-only inspection confirmed third-person mode and an existing FaceGenFace mesh with its hidden bit clear. Root cause remains unresolved; do not label culling or cutaway complete.
+
+A* route planning passed deterministic obstacle, step-height, unreachable-target and cancellation checks. Live logs reported routes reaching destinations. The corrected form-table lookup activated Prospector Saloon reference 0010636F; a subsequent frame showed dialogue with Sunny Smiles inside the saloon. Full interaction regression coverage is still outstanding.
+
+The native Pip-Boy local-map rendering integration is not implemented. No debug map is presented as a substitute.
+
+
+## World-transform culling correction (staged)
+
+Renderer submission, the camera frustum and the culling adapter now use one worldFrustum definition. The culling adapter calls the engine's NiFrustumPlanes builder at A74E10 with the final NiCamera world transform at +68. The engine implementation was inspected in live process memory and explicitly handles the orthographic flag. The adapter temporarily excludes the BSCullingProcess compound volume for this camera, retaining the ordinary world-bound sphere test at A694E0; other camera passes are unchanged. Original per-process state is restored after traversal.
+
+This supersedes the disabled hand-built plane override. The cutaway geometry hooks remain disabled. Release build and 1,176 camera round trips pass, with added partial-sphere intersection, tangent, fully-outside and camera-volume corner cases. These mathematical tests do not prove live visibility. DLL staged for the next launcher start; saloon foreground-object visual regression and performance assessment pending. Excluding compound occlusion can increase draw calls, particularly indoors.
+
+User playtest confirmation: the world-transform culling correction fixes the reported foreground-object disappearance. Confirmed in conversation after installing the staged build.

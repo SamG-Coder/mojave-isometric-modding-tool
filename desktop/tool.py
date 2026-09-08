@@ -31,7 +31,7 @@ def send(operation="configure", values=None, text=""):
         profile.write_text(json.dumps(saved))
     c = configparser.ConfigParser()
     c["command"] = {"sequence": str(time.time_ns() // 1000000 % 2147483647), "operation": operation, "text": text}
-    c["camera"] = {k: str(v) for k, v in (values or {}).items()}
+    c["camera"] = {k: str(int(v) if isinstance(v, bool) else v) for k, v in (values or {}).items()}
     tmp = RUNTIME / "command.tmp"
     with tmp.open("w", encoding="ascii") as f:
         c.write(f)

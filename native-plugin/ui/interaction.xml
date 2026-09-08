@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only; Copyright 2026 SamGCoder -->
+<text name="MojaveIsoInteraction">
+ <visible>0</visible><x>0</x><y>0</y><depth>2</depth>
+ <font>3</font><string> </string><alpha>255</alpha>
+ <red>255</red><green>180</green><blue>64</blue>
+ <justify>0</justify><wrapwidth>300</wrapwidth>
+</text>

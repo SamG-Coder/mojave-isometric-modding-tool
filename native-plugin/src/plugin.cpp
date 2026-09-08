@@ -13,8 +13,17 @@
 #include "nvse_abi.hpp"
 #include "engine.hpp"
 #include "wheel_input.hpp"
+#include "pathfinder.hpp"
+#include "overlay.hpp"
+#include "cutaway.hpp"
 using namespace engine;
 namespace {
+navigation::Search route;size_t waypoint{};uint64_t routeStarted{};
+struct NearbyAction{uint32_t id;Vec pos;std::string text;float range;};std::vector<NearbyAction> nearby;
+struct ActionBox{uint32_t id;float x,y,w,h;};std::vector<ActionBox> actionBoxes;
+struct MapCell{Vec p;int state=0;};std::array<MapCell,1024> mapCells{};Vec mapOrigin{};size_t mapIndex{};bool mapReady{};
+struct Cover{uint32_t id;void* node;};std::vector<Cover> occludingCover;
+overlay::Painter hudPainter,fadePainter;float fadeAlpha{};uint64_t fadeHoldUntil{};bool pendingDisable{};
 WheelInput wheelInput;std::atomic<int> mouseDeltaX{},mouseDeltaY{};
 CameraSample renderCamera{},displayCamera{};float lastPickError=-1;
 std::string root, bridge; Console* console{}; Scripts* scripts{};
@@ -40,7 +49,7 @@ double number(const std::string& text){
     if(!scripts)return 0;auto& code=expressions[text];if(!code)code=scripts->CompileExpression(text.c_str());
     ScriptResult out{};if(code&&scripts->CallFunction(code,player(),nullptr,&out,0)&&out.type==1)return out.number;return 0;
 }
-void stop(){interactionId=0;pendingActivation=false;if(moving)movement(0);if(heldForward>=0){run("ReleaseKey "+std::to_string(heldForward));heldForward=-1;}moving=false;}
+void stop(){route.cancel();waypoint=0;interactionId=0;pendingActivation=false;if(moving)movement(0);if(heldForward>=0){run("ReleaseKey "+std::to_string(heldForward));heldForward=-1;}moving=false;}
 void restoreProjection(){if(savedCamera){at<Frustum>(savedCamera,0xDC)=savedFrustum;savedCamera=nullptr;}}
 void ownControls(bool acquire){
     if(acquire==controlsAcquired)return;
@@ -51,16 +60,17 @@ void ownControls(bool acquire){
     controlsAcquired=acquire;
 }
 void updateReticle(bool hide);
+void restoreCover();
 void setEnabled(bool value){
     if(value==enabled)return;
     wheelInput.reset();mouseDeltaX=0;mouseDeltaY=0;
     if(value&&(!hooksReady||!player()||!gameMode())){note="Load a game before enabling the camera";return;}
-    if(!value){updateReticle(false);displayCamera.valid=renderCamera.valid=false;stop();restoreProjection();enabled=false;ownControls(false);cameraBlend=0;if(priorThird==false&&player())reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),true);note="Normal controls restored";return;}
+    if(!value){restoreCover();updateReticle(false);displayCamera.valid=renderCamera.valid=false;stop();restoreProjection();enabled=false;ownControls(false);cameraBlend=0;if(priorThird==false&&player())reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),true);note="Normal controls restored";return;}
     priorThird=at<uint8_t>(player(),0x64C)!=0;if(!priorThird)reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
     ownControls(true);
-    enabled=true;cursorX=width/2;cursorY=height/2;note="Isometric prototype enabled";
+    fadeAlpha=1;fadeHoldUntil=GetTickCount64()+80;enabled=true;cursorX=width/2;cursorY=height/2;note="Isometric prototype enabled";
 }
-bool active(){return enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64C)&&!pendingActivation;}
+bool active(){return enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64C)&&!pendingActivation&&!pendingDisable;}
 // Filter the mouse device result before vanilla camera code sees lZ.
 // Chain the existing GetDeviceState implementation, including xNVSE's wrapper.
 using GetMouseState=HRESULT(WINAPI*)(void*,DWORD,void*);
@@ -88,13 +98,18 @@ void installMouseHook(){
     DWORD ignored{};VirtualProtect(table+9,sizeof(void*),old,&ignored);
     log("Mouse wheel isolation hook installed");
 }
+Frustum worldFrustum(Frustum f){
+    f.ortho=true;f.left=-span*.5f;f.right=span*.5f;
+    f.top=span*height/width*.5f;f.bottom=-f.top;f.nearPlane=5;
+    f.farPlane=std::max(f.farPlane,24000.f);return f;
+}
 using SetupCamera=void(__thiscall*)(void*,Vec*,Vec*,Vec*,Vec*,Frustum*,float*);
 SetupCamera originalSetupCamera{};
 void __fastcall setupCameraHook(void* renderer,void*,Vec* pos,Vec* dir,Vec* camUp,Vec* camRight,Frustum* frustum,float* viewport){
     // Scope to the actual world camera; menu, shadow and reflection passes keep their own projection.
     if(enabled&&cameraBlend>0&&camera&&pos&&frustum&&length(*pos-cameraPos)<1.f){
         Frustum custom=*frustum;
-        if(orthographic&&cameraBlend>0.999f){custom.ortho=true;custom.left=-span/2;custom.right=span/2;custom.top=span*height/width/2;custom.bottom=-custom.top;custom.nearPlane=5;}
+        if(orthographic&&cameraBlend>0.999f){custom=worldFrustum(custom);}
         renderedFrustum=custom;haveRenderedFrustum=true;++projectionUpdates;
         originalSetupCamera(renderer,pos,dir,camUp,camRight,&custom,viewport);
         auto device=at<IDirect3DDevice9*>(renderer,0x288);D3DVIEWPORT9 vp{};
@@ -108,7 +123,9 @@ void basis(){
     forward={sinf(y)*cosf(p),cosf(y)*cosf(p),-sinf(p)};
     right={cosf(y),-sinf(y),0};up={sinf(y)*sinf(p),cosf(y)*sinf(p),cosf(p)};
     rotation={{{right.x,forward.x,up.x},{right.y,forward.y,up.y},{right.z,forward.z,up.z}}};
-    cameraPos=at<Vec>(player(),0x30)+Vec{0,0,65}-forward*distance;
+    // Keep the bottom of the orthographic ground footprint in front of the near plane.
+    float safeDistance=orthographic?std::max(distance,span*height/width*.5f/std::tan(p)+500.f):distance;
+    cameraPos=at<Vec>(player(),0x30)+Vec{0,0,65}-forward*safeDistance;
 }
 using SetVector=void(__thiscall*)(void*,const Vec*);
 using SetMatrix=void(__thiscall*)(void*,const Mat*);
@@ -127,7 +144,7 @@ void __fastcall rotationHook(void* node,void*,const Mat* rot){
     if(camera){
         if(savedCamera!=camera){savedCamera=camera;savedFrustum=at<Frustum>(camera,0xDC);}
         auto& f=at<Frustum>(camera,0xDC);
-        if(orthographic&&cameraBlend>0.999f){f.ortho=true;f.left=-span/2;f.right=span/2;f.top=span*height/width/2;f.bottom=-f.top;f.nearPlane=5;f.farPlane=std::max(savedFrustum.farPlane,24000.f);}
+        if(orthographic&&cameraBlend>0.999f){f=worldFrustum(savedFrustum);}
         else f=savedFrustum;
     }
 }
@@ -136,6 +153,65 @@ bool patchCall(uintptr_t address,void* hookFunction){
     DWORD old{};if(!VirtualProtect(reinterpret_cast<void*>(address),5,PAGE_EXECUTE_READWRITE,&old))return false;
     *reinterpret_cast<int32_t*>(address+1)=int32_t(reinterpret_cast<uintptr_t>(hookFunction)-address-5);
     DWORD ignored;VirtualProtect(reinterpret_cast<void*>(address),5,old,&ignored);FlushInstructionCache(GetCurrentProcess(),reinterpret_cast<void*>(address),5);return true;
+}
+// The scene culler consumes cached planes before the renderer receives SetupCamera.
+// Replace the world-camera volume at the visibility test, including the compound
+// view frustum used by Bethesda's culler. Keep reflection/shadow cameras untouched.
+using CullObject=void(__thiscall*)(void*,void*);
+CullObject originalCull{};uint64_t cullingUpdates{};
+void __fastcall cullObjectHook(void* process,void*,void* object){
+    if(!active()||!orthographic||cameraBlend<.999f||at<void*>(process,0xC)!=camera){originalCull(process,object);return;}
+    const auto oldFrustum=at<Frustum>(process,0x10);
+    const auto oldPlanes=at<CullingPlanes>(process,0x2C);
+    void* compound=at<void*>(process,0xC0);
+    auto f=worldFrustum(at<Frustum>(camera,0xDC));
+    at<Frustum>(process,0x10)=f;
+    // NiCamera's final world transform uses direction/up/right columns, unlike
+    // the parent camera rig. Let the engine construct its own orthographic
+    // planes from that transform; never substitute the rig's basis vectors.
+    reinterpret_cast<void(__thiscall*)(void*,const Frustum*,const void*)>(0xA74E10)(
+        static_cast<char*>(process)+0x2C,&f,static_cast<char*>(camera)+0x68);
+    // Compound occlusion/portal volumes are perspective-derived. Reusing them
+    // can reject a sphere that intersects the orthographic view. Use the normal
+    // six-plane, world-bound sphere path for this camera. This does NOT bypass
+    // frustum culling, alter object visibility flags or touch other cameras.
+    at<void*>(process,0xC0)=nullptr;
+    ++cullingUpdates;originalCull(process,object);
+    at<void*>(process,0xC0)=compound;
+    at<Frustum>(process,0x10)=oldFrustum;at<CullingPlanes>(process,0x2C)=oldPlanes;
+}
+bool replaceSlot(uintptr_t slot,void* replacement,void*& original){
+    auto current=*reinterpret_cast<uintptr_t*>(slot);if(current<0x400000||current>0x1000000)return false;
+    DWORD old{};if(!VirtualProtect(reinterpret_cast<void*>(slot),4,PAGE_READWRITE,&old))return false;
+    original=reinterpret_cast<void*>(current);*reinterpret_cast<void**>(slot)=replacement;
+    DWORD ignored{};VirtualProtect(reinterpret_cast<void*>(slot),4,old,&ignored);return true;
+}
+using DrawGeometry=void(__thiscall*)(void*,void*);
+std::array<DrawGeometry,6> originalGeometry{};
+thread_local bool drawingCover{};uint64_t geometryVisits{},cutawayDraws{};
+template<size_t I> void __fastcall geometryHook(void* renderer,void*,void* geometry){
+    bool previous=drawingCover;drawingCover=false;++geometryVisits;
+    if(active()&&!occludingCover.empty()&&geometry){auto ref=parentReference(geometry);
+        if(ref)for(auto cover:occludingCover)if(at<uint32_t>(ref,0xC)==cover.id){drawingCover=true;break;}
+    }
+    originalGeometry[I](renderer,geometry);drawingCover=previous;
+}
+using DrawIndexed=HRESULT(WINAPI*)(IDirect3DDevice9*,D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT);
+DrawIndexed originalDrawIndexed{};
+HRESULT WINAPI drawIndexedHook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertices,UINT start,UINT count){
+    cutaway::Mask mask;bool applied=false;
+    // Screen-space projection is taken from this render pass, never last frame.
+    if(drawingCover&&renderCamera.valid&&player()&&length(renderCamera.position-cameraPos)<1){
+        float x{},y{};if(renderCamera.project(at<Vec>(player(),0x30)+Vec{0,0,65},x,y))applied=mask.begin(device,x,y,std::clamp(height*.15f,70.f,160.f));
+    }
+    HRESULT hr=originalDrawIndexed(device,type,base,min,vertices,start,count);
+    if(applied){++cutawayDraws;mask.end();}return hr;
+}
+void installCutawayDevice(IDirect3DDevice9* device){
+    if(originalDrawIndexed)return;auto table=*reinterpret_cast<void***>(device);DWORD old{};
+    if(!VirtualProtect(table+82,sizeof(void*),PAGE_READWRITE,&old))return;
+    originalDrawIndexed=reinterpret_cast<DrawIndexed>(table[82]);table[82]=reinterpret_cast<void*>(drawIndexedHook);
+    DWORD ignored{};VirtualProtect(table+82,sizeof(void*),old,&ignored);log("Local cutaway draw hook installed");
 }
 void installHooks(){
     constexpr uintptr_t p1=0x94AD8A,p2=0x94BDC2,r1=0x94AD9D,r2=0x94BDD5;
@@ -147,6 +223,10 @@ void installHooks(){
     // Validate every site before modifying any. Matching callers also avoids silently stacking camera mods.
     hooksReady=patchCall(p1,reinterpret_cast<void*>(positionHook))&&patchCall(p2,reinterpret_cast<void*>(positionHook))&&patchCall(r1,reinterpret_cast<void*>(rotationHook))&&patchCall(r2,reinterpret_cast<void*>(rotationHook));
     log(hooksReady?"Native camera hooks installed":"Camera hook installation failed");
+    void* previousCull{};
+    if(replaceSlot(0x101E2EC+0x44,reinterpret_cast<void*>(cullObjectHook),previousCull)){
+        originalCull=reinterpret_cast<CullObject>(previousCull);log("World-transform orthographic bound culling installed (compound occlusion excluded)");
+    }else {lastError="World culling hook unavailable";log(lastError);}
     constexpr uintptr_t rendererSlot=0x10EE4BC+0x18C;
     uintptr_t setup=*reinterpret_cast<uintptr_t*>(rendererSlot);
     if(setup>0x400000&&setup<0x1000000){
@@ -162,6 +242,33 @@ bool pick(float x,float y,Vec& hit,void*& hitObject){
     Vec origin{},ray{};
     if(!displayCamera.ray(x,y,origin,ray))return false;
     return raycast(origin,ray,hit,hitObject);
+}
+bool groundProbe(Vec guess,Vec& ground){
+    void* object{};if(!raycast(guess+Vec{0,0,64},{0,0,-1},ground,object))return false;
+    if(std::abs(ground.z-guess.z)>90)return false;
+    Vec ceiling{};if(raycast(ground+Vec{0,0,5},{0,0,1},ceiling,object)&&ceiling.z-ground.z<110)return false;
+    return true;
+}
+bool corridorClear(Vec a,Vec b){
+    Vec delta=b-a;float len=length(delta);if(len<1)return true;
+    if(std::abs(delta.z)>std::hypot(delta.x,delta.y)*.8f+18)return false;
+    Vec side=normalized(Vec{-delta.y,delta.x,0})*19;
+    for(int lane=-1;lane<=1;lane++)for(float bodyHeight:{28.f,95.f}){
+        Vec origin=a+side*float(lane)+Vec{0,0,bodyHeight},hit{};void* object{};
+        if(raycast(origin,delta*(1/len),hit,object)&&length(hit-origin)<len-3)return false;
+    }
+    return true;
+}
+void planDestination(Vec hit,uint32_t id){
+    stop();target=hit;interactionId=id;markerUntil=GetTickCount64()+3000;
+    route.begin(at<Vec>(player(),0x30),target,id?100.f:20.f);routeStarted=GetTickCount64();note="Planning route";
+}
+void nearbyDestination(uint32_t id){auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
+void beginWalking(){
+    moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=at<Vec>(player(),0x30);waypoint=route.path.size()>1?1:0;
+    auto inputState=global(0x11F35CC);heldForward=inputState?at<uint8_t>(inputState,0x1B94):-1;
+    if(heldForward>=0&&heldForward<255)run("HoldKey "+std::to_string(heldForward));else {heldForward=-1;stop();note="Bind forward movement to a keyboard key";return;}
+    note=interactionId?"Following route to interaction":"Following route";
 }
 void destination(float x,float y){
     if(!active())return;
@@ -182,12 +289,15 @@ void destination(float x,float y){
         // Keep the original ray hit: replacing its Z with the probe shifts the click on slopes.
     }
     float projectedX{},projectedY{};lastPickError=displayCamera.project(hit,projectedX,projectedY)?std::hypot(projectedX-x,projectedY-y):-1;
-    stop();interactionId=pickedId;target=hit;markerUntil=GetTickCount64()+3000;moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=pos;
-    void* inputState=global(0x11F35CC);heldForward=inputState?at<uint8_t>(inputState,0x1B94):-1;
-    if(heldForward>=0&&heldForward<255)run("HoldKey "+std::to_string(heldForward));else {heldForward=-1;stop();note="Forward movement is not bound to a keyboard key";return;}
-    note=interactionId?"Walking to interact":"Walking to ground destination";
+    planDestination(hit,pickedId);
 }
 void walk(){
+    if(route.state==navigation::Search::State::Searching){
+        if(!active()){stop();return;}
+        route.step(groundProbe,corridorClear,4);
+        if(route.state==navigation::Search::State::Found)beginWalking();
+        else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){stop();note="No reachable route found";}
+    }
     if(!moving)return;if(!active()){stop();return;}
     Vec pos=at<Vec>(player(),0x30),delta=target-pos;
     if(interactionId&&(!interactable(reference(interactionId))||at<void*>(reference(interactionId),0x40)!=at<void*>(player(),0x40))){stop();note="Interaction target no longer available";return;}
@@ -200,14 +310,17 @@ void walk(){
     }
     auto now=GetTickCount64();if(length(pos-lastPos)>12){lastPos=pos;lastProgress=now;}
     if(now-lastProgress>1800||now-moveStarted>30000){stop();note="Movement stopped: blocked or timed out";return;}
+    while(waypoint+1<route.path.size()&&length(route.path[waypoint]-pos)<30)++waypoint;
+    if(waypoint<route.path.size())delta=route.path[waypoint]-pos;
+    if(!corridorClear(pos,pos+normalized(delta)*std::min(35.f,length(delta)))){stop();note="Route blocked by a new obstacle";return;}
     at<float>(player(),0x2c)=atan2f(delta.x,delta.y);
     movement(1|512);
 }
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
-    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError;
+    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<route.path.size()<<",\"expanded_nodes\":"<<route.expanded<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
-    s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
+    s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);
 }
 float setting(const char* name,float fallback){char value[64];GetPrivateProfileStringA("camera",name,std::to_string(fallback).c_str(),value,64,(bridge+"/command.ini").c_str());char* end{};float n=strtof(value,&end);return end!=value&&std::isfinite(n)?n:fallback;}
@@ -218,10 +331,11 @@ void poll(){
         lastSequence=seq;desiredYaw=setting("yaw",desiredYaw);desiredPitch=std::clamp(setting("pitch",desiredPitch),20.f,80.f);distance=std::clamp(setting("distance",distance),200.f,4000.f);span=std::clamp(setting("span",span),300.f,5000.f);
         orthographic=GetPrivateProfileIntA("camera","orthographic",orthographic,file.c_str())!=0;
         char op[40];GetPrivateProfileStringA("command","operation","configure",op,40,file.c_str());
-        if(!strcmp(op,"enable")){requested=true;setEnabled(true);}else if(!strcmp(op,"disable")){requested=false;setEnabled(false);}
+        if(!strcmp(op,"enable")){requested=true;setEnabled(true);}else if(!strcmp(op,"disable")){requested=false;pendingDisable=true;stop();}
         else if(!strcmp(op,"capture"))captureRequested=true;
         else if(!strcmp(op,"stop"))stop();
         else if(!strcmp(op,"inspect")){void* object{};Vec point{};hoverRef=0;if(pick(setting("x",cursorX),setting("y",cursorY),point,object)){auto ref=parentReference(object);hoverRef=ref?at<uint32_t>(ref,0xC):0;}status();}
+        else if(!strcmp(op,"interact"))nearbyDestination(uint32_t(setting("id",0)));
         else if(!strcmp(op,"move"))destination(setting("x",width/2),setting("y",height/2));
         else if(!strcmp(op,"console")){char line[512];GetPrivateProfileStringA("command","text","",line,512,file.c_str());if(*line){run(line);note="Console command submitted; inspect frame for result";}}
     }
@@ -230,7 +344,7 @@ void poll(){
 void input(){
     DWORD foreground{};GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     if(foreground!=GetCurrentProcessId()){mouseDeltaX=0;mouseDeltaY=0;stop();lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;return;}
-    bool f=(GetAsyncKeyState(VK_F8)&0x8000)!=0;if(f&&!lastF){requested=!enabled;setEnabled(requested);}lastF=f;
+    bool f=(GetAsyncKeyState(VK_F8)&0x8000)!=0;if(f&&!lastF){requested=!enabled;if(requested)setEnabled(true);else{pendingDisable=true;stop();}}lastF=f;
     bool l=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,r=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
     if(!active()){if(!pendingActivation)stop();lastL=l;lastR=r;lastMiddle=false;return;}
     void* in=global(0x11F35CC);if(in){
@@ -242,9 +356,11 @@ void input(){
         int wheel=wheelInput.take();if(wheel){distance=std::clamp(distance-wheel*.5f,200.f,4000.f);span=std::clamp(span-wheel*.5f,300.f,5000.f);}}
     if(GetAsyncKeyState(VK_OEM_4)&0x8000)desiredYaw-=100.f*frameDt;
     if(GetAsyncKeyState(VK_OEM_6)&0x8000)desiredYaw+=100.f*frameDt;
-    if(l&&!lastL&&!lastMiddle)destination(cursorX,cursorY);if(r&&!lastR)stop();lastL=l;lastR=r;
+    if(l&&!lastL&&!lastMiddle){bool selected=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h){nearbyDestination(box.id);selected=true;break;}
+        if(!selected)destination(cursorX,cursorY);
+    }if(r&&!lastR)stop();lastL=l;lastR=r;
     static uint64_t lastHover{};auto now=GetTickCount64();
-    if(now-lastHover>100){lastHover=now;hoverRef=0;Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){auto ref=parentReference(object);if(interactable(ref))hoverRef=at<uint32_t>(ref,0xC);}}
+    if(now-lastHover>100){bool overPrompt=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h)overPrompt=true;lastHover=now;if(!overPrompt){hoverRef=0;Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){auto ref=parentReference(object);if(interactable(ref))hoverRef=at<uint32_t>(ref,0xC);}}}
     if(GetAsyncKeyState(VK_ESCAPE)&0x8000)stop();walk();
 }
 void capture(IDirect3DDevice9* device){
@@ -285,7 +401,7 @@ void updateReticle(bool hide){
     }else if(heldTile){reinterpret_cast<void(__thiscall*)(void*,uint32_t,float,bool)>(0xA012D0)(heldTile,0xFA3,previousVisible,true);heldTile=nullptr;}
 }
 void destinationMarker(IDirect3DDevice9* device){
-    if(!moving&&GetTickCount64()>markerUntil)return;
+    if(!moving&&route.state!=navigation::Search::State::Searching&&GetTickCount64()>markerUntil)return;
     float centreX{},centreY{};if(!renderCamera.project(target,centreX,centreY))return;
     std::array<D3DRECT,64> dots{};DWORD count=0;
     for(int i=0;i<64;i++){
@@ -296,9 +412,74 @@ void destinationMarker(IDirect3DDevice9* device){
     }
     if(count)device->Clear(count,dots.data(),D3DCLEAR_TARGET,hudColour(),1,0);
 }
+std::string actionName(void* ref){
+    auto base=at<void*>(ref,0x20);auto type=at<uint8_t>(base,4);int offset=(type==0x2A||type==0x2B)?0xD0:(type==0x1B?0x3C:0x30);
+    const char* name=at<const char*>(base,offset+4);auto len=at<uint16_t>(base,offset+8);
+    std::string label=(name&&len&&len<512)?std::string(name,std::min<size_t>(len,27)):"Object";
+    for(char& c:label)if(static_cast<unsigned char>(c)<32)c=' ';
+    return (type==0x1C?"Enter ":((type==0x2A||type==0x2B||type==0x16)?"Talk to ":"Use "))+label;
+}
+void restoreCover(){
+    occludingCover.clear();
+}
+void sampleWorld(){
+    if(!active()){restoreCover();nearby.clear();actionBoxes.clear();return;}
+    auto p=at<Vec>(player(),0x30);static uint64_t lastActions{},lastMap{},lastCover{};auto now=GetTickCount64();
+    if(now-lastActions>800){lastActions=now;nearby.clear();auto table=global(0x11C54C0);auto buckets=table?at<void**>(table,8):nullptr;auto count=table?at<uint32_t>(table,4):0;
+        if(buckets&&count<1000000)for(uint32_t i=0;i<count;i++)for(auto e=buckets[i];e;e=at<void*>(e,0)){
+            auto ref=at<void*>(e,8);if(!interactable(ref)||(at<uint32_t>(ref,8)&0x820))continue;
+            auto render=at<void*>(ref,0x64);if(!render||!at<void*>(render,0x14))continue;
+            auto pos=at<Vec>(ref,0x30);float d=length(pos-p);if(ref!=player()&&at<void*>(ref,0x40)==at<void*>(player(),0x40)&&std::abs(pos.z-p.z)<150&&d<350)nearby.push_back({at<uint32_t>(ref,0xC),pos,actionName(ref),d});
+        }
+        std::sort(nearby.begin(),nearby.end(),[](auto& a,auto& b){return a.range<b.range;});if(nearby.size()>8)nearby.resize(8);
+    }
+    if(now-lastCover>120){lastCover=now;restoreCover();Vec start=p+Vec{0,0,100},dir=normalized(cameraPos-start),hit{};void* object{};
+        if(raycast(start,dir,hit,object)&&length(hit-start)<length(cameraPos-start)-40){auto ref=parentReference(object);if(ref&&ref!=player()){
+            auto base=at<void*>(ref,0x20);auto type=base?at<uint8_t>(base,4):0;auto render=at<void*>(ref,0x64);auto node=render?at<void*>(render,0x14):nullptr;
+            if(node&&(type==0x20||type==0x21||type==0x22)&&!(at<uint32_t>(node,0x30)&1)){occludingCover.push_back({at<uint32_t>(ref,0xC),node});}
+        }}
+    }
+
+}
+void nativeInteraction(){
+    static void* owner{};static void* label{};static bool attempted{};
+    auto hud=global(0x11D96C0);auto rootTile=hud?at<void*>(hud,4):nullptr;
+    if(rootTile!=owner){owner=rootTile;label=nullptr;attempted=false;}
+    actionBoxes.clear();if(!rootTile)return;
+    if(!label&&!attempted&&active()){
+        attempted=true;label=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,"menus\\MojaveIso\\interaction.xml");
+        log(label?"Native interaction tile created":"Native interaction tile unavailable");
+    }
+    if(!label)return;
+    auto set=[&](uint32_t id,float value){reinterpret_cast<void(__thiscall*)(void*,uint32_t,float,bool)>(0xA012D0)(label,id,value,true);};
+    set(0xFA3,0);
+    if(!active()||!hoverRef||!displayCamera.valid)return;
+    auto ref=reference(hoverRef);if(!interactable(ref)||ref==player()||at<void*>(ref,0x40)!=at<void*>(player(),0x40))return;
+    auto p=at<Vec>(ref,0x30),delta=p-at<Vec>(player(),0x30);
+    if(length(delta)>350||std::abs(delta.z)>150)return;
+    float x{},y{};if(!displayCamera.project(p+Vec{0,0,65},x,y))return;
+    auto get=[&](void* tile,uint32_t id,float fallback){auto value=tileValue(tile,id);return value?at<float>(value,8):fallback;};
+    float uiWidth=get(rootTile,0xFB1,1280),uiHeight=get(rootTile,0xFB0,720);
+    if(uiWidth<=0||uiHeight<=0)return;
+    auto nativeText=at<void*>(hud,0xA8);
+    for(uint32_t id:{0xFB9u,0xFB2u,0xFB3u,0xFB4u})set(id,get(nativeText,id,id==0xFB9?3.f:255.f));
+    auto text=actionName(ref);auto stringValue=tileValue(label,0xFC4);
+    if(stringValue)reinterpret_cast<void(__thiscall*)(void*,const char*,bool)>(0xA0A300)(stringValue,text.c_str(),true);
+    // Place one native-font prompt beside the hovered object, above HUD meters.
+    x=std::clamp(x+12,8.f,std::max(8.f,width-230));y=std::clamp(y-24,8.f,std::max(8.f,height-110));
+    set(0xFA1,x*uiWidth/width);set(0xFA2,y*uiHeight/height);set(0xFA3,1);
+    actionBoxes.push_back({hoverRef,x,y,220,30});
+}
+void drawWorldUI(IDirect3DDevice9* device){
+    if(fadeAlpha>.001f&&fadePainter.begin(device)){fadePainter.rect(0,0,width,height,DWORD(std::clamp(fadeAlpha,0.f,1.f)*255)<<24);fadePainter.finish();}
+}
 void present(){
     auto now=GetTickCount64();frameDt=lastFrameTick?std::clamp(float(now-lastFrameTick)/1000.f,0.f,.05f):.016f;lastFrameTick=now;
     bool gameplay=active();ownControls(gameplay);
+    static bool previouslyActive{};
+    if(gameplay!=previouslyActive&&!pendingActivation&&!pendingDisable){fadeAlpha=1;fadeHoldUntil=now+120;}previouslyActive=gameplay;
+    float fadeGoal=(pendingActivation||pendingDisable||now<fadeHoldUntil)?1.f:0.f;
+    float fadeStep=frameDt/.22f;fadeAlpha=fadeGoal>fadeAlpha?std::min(fadeGoal,fadeAlpha+fadeStep):std::max(fadeGoal,fadeAlpha-fadeStep);
     if(!gameplay){mouseDeltaX=0;mouseDeltaY=0;displayCamera.valid=false;wheelInput.reset();if(!pendingActivation)stop();}
     float goal=gameplay?1.f:0.f,step=frameDt/0.45f;
     cameraBlend=goal>cameraBlend?std::min(goal,cameraBlend+step):std::max(goal,cameraBlend-step);
@@ -306,6 +487,7 @@ void present(){
     yaw+=std::remainder(desiredYaw-yaw,360.f)*(1-std::exp(-12.f*frameDt));
     if(!gameplay){lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;}
     ++frames;void* renderer=global(0x11F4748);if(!renderer)return;auto device=at<IDirect3DDevice9*>(renderer,0x288);if(!device)return;
+    // Cutaway remains disabled pending visibility regression diagnosis.
     D3DVIEWPORT9 vp{};if(SUCCEEDED(device->GetViewport(&vp))){width=float(vp.Width);height=float(vp.Height);}
     if(active()){
         destinationMarker(device);
@@ -315,6 +497,7 @@ void present(){
         if(count)device->Clear(count,arrow.data(),D3DCLEAR_TARGET,hudColour(),1,0);
         displayCamera=renderCamera;
     }
+    drawWorldUI(device);
     if(captureRequested){captureRequested=false;capture(device);}
 }
 void saveSettings(){
@@ -340,30 +523,31 @@ void onMessage(Message* m){
     // These ordinals are the public xNVSE 6.4.8 messaging ABI.
     switch(m->type){
     case 9:installHooks();break; // PostPostLoad
-    case 2:case 6:wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;autoReadySince=0;camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
+    case 2:case 6:restoreCover();mapReady=false;nearby.clear();pendingDisable=false;wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;autoReadySince=0;camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
     case 14:requested=autoEnable;autoReadySince=0;break; // NewGame
     case 19:expressions.clear();break; // ClearScriptDataCache
     case 1:case 7:saveSettings();break; // Exit
     case 20:{static uint64_t previousTick{};auto now=GetTickCount64();if(previousTick&&now-previousTick>500)stop();previousTick=now;
-        if(pendingActivation&&now-activationStarted>=500){
-            auto ref=reference(interactionId);pendingActivation=false;interactionId=0;
+        if(pendingActivation&&fadeAlpha>=.99f&&now-activationStarted>=250){
+            auto ref=reference(interactionId);pendingActivation=false;interactionId=0;fadeHoldUntil=now+250;
             if(gameMode()&&interactable(ref)&&at<void*>(ref,0x40)==at<void*>(player(),0x40)&&length(target-at<Vec>(player(),0x30))<200){
                 auto delta=target-at<Vec>(player(),0x30);at<float>(player(),0x2C)=atan2f(delta.x,delta.y);
-                note=activate(ref)?"Interaction submitted to game":"Game declined interaction";
+                log("Activating reference "+std::to_string(at<uint32_t>(ref,0xC)));note=activate(ref)?"Interaction submitted to game":"Game declined interaction";
             }
         }
+        if(pendingDisable&&fadeAlpha>=.99f){pendingDisable=false;setEnabled(false);fadeHoldUntil=now+150;}
         installMouseHook();
-        if(requested&&!enabled&&hooksReady&&gameMode()&&!dialogue()&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
+        if(requested&&!enabled&&hooksReady&&reference(0x14)==player()&&gameMode()&&!dialogue()&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
             if(!autoReadySince)autoReadySince=now;
             if(now-autoReadySince>=750){setEnabled(true);autoReadySince=0;}
         }else autoReadySince=0;
-        updateReticle(active());poll();input();saveSettings();break;} // MainGameLoop
+        updateReticle(active());poll();input();sampleWorld();nativeInteraction();saveSettings();break;} // MainGameLoop
     case 24:present();break; // OnFramePresent
     }
 }
 }
 extern "C" __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* api,PluginInfo* info){
-    info->infoVersion=1;info->name="MojaveIsoNative";info->version=5;
+    info->infoVersion=1;info->name="MojaveIsoNative";info->version=6;
     return !api->isEditor&&!api->isNogore&&api->runtimeVersion==0x040020D0;
 }
 extern "C" __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* api){
@@ -372,6 +556,6 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* api){
     lastSequence=GetPrivateProfileIntA("command","sequence",0,(bridge+"/command.ini").c_str());
     console=static_cast<Console*>(api->QueryInterface(1));scripts=static_cast<Scripts*>(api->QueryInterface(6));
     auto messages=static_cast<Messaging*>(api->QueryInterface(2));
-    if(!console||!scripts||!messages)return false;log("MojaveIsoNative 0.5 starting, native ABI 1.4.0.525");
+    if(!console||!scripts||!messages)return false;log("MojaveIsoNative 0.6 starting, native ABI 1.4.0.525");
     return messages->RegisterListener(api->GetPluginHandle(),"NVSE",onMessage);
 }

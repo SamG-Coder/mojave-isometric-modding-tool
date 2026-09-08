@@ -46,7 +46,13 @@ inline void* parentReference(void* node){
         if(at<uintptr_t>(node,0)==0x10A8F90){auto ref=at<void*>(node,0xCC);if(ref)return ref;}
     return nullptr;
 }
-inline void* reference(uint32_t id){return id?reinterpret_cast<void*(__stdcall*)(uint32_t)>(0x4F9620)(id):nullptr;}
+// JIP's runtime form-table lookup. 0x4F9620 is NOT this function in 1.4.0.525.
+inline void* reference(uint32_t id){
+    if(!id)return nullptr;auto table=global(0x11C54C0);if(!table)return nullptr;
+    auto count=at<uint32_t>(table,4);auto buckets=at<void**>(table,8);if(!count||count>1000000||!buckets)return nullptr;
+    auto entry=buckets[id%count];for(unsigned n=0;entry&&n<100000;n++,entry=at<void*>(entry,0))if(at<uint32_t>(entry,4)==id)return at<void*>(entry,8);
+    return nullptr;
+}
 inline bool interactable(void* ref){
     if(!ref||ref==player())return false;
     auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
