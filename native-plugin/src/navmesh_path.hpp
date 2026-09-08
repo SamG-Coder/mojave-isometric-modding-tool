@@ -11,17 +11,12 @@
 #include <limits>
 namespace navigation {
 using engine::Vec;
-struct MeshTriangle {Vec v[3];uint32_t mesh{},index{};int side[3];};
+struct MeshEdgeTarget {uint32_t mesh{};int triangle{-1};};
+struct MeshTriangle {Vec v[3];uint32_t mesh{},index{};int side[3];MeshEdgeTarget external[3]{};};
 class MeshGraph {
  struct Link{int triangle,edge,otherEdge;};
  struct Triangle{MeshTriangle source;Vec centre;std::vector<Link> links;};
- struct EdgeKey {std::array<int64_t,6> p;bool operator==(const EdgeKey&)const=default;};
- struct Hash{size_t operator()(const EdgeKey& k)const{size_t h=0;for(auto v:k.p)h^=std::hash<int64_t>{}(v)+0x9e3779b9+(h<<6)+(h>>2);return h;}};
  std::vector<Triangle> triangles;
- static EdgeKey edgeKey(Vec a,Vec b){
-  std::array<int64_t,3> x{llround(a.x*100),llround(a.y*100),llround(a.z*100)},y{llround(b.x*100),llround(b.y*100),llround(b.z*100)};
-  if(y<x)std::swap(x,y);return {{x[0],x[1],x[2],y[0],y[1],y[2]}};
- }
  static Vec nearest(Vec p,const MeshTriangle& t){
   auto a=t.v[0],b=t.v[1],c=t.v[2];float denom=(b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
   if(std::abs(denom)>1e-5f){float u=((b.y-c.y)*(p.x-c.x)+(c.x-b.x)*(p.y-c.y))/denom;
@@ -74,15 +69,23 @@ class MeshGraph {
  }
 public:
  unsigned expanded{};size_t size()const{return triangles.size();}
- void build(const std::vector<MeshTriangle>& input,const std::set<std::pair<uint32_t,uint32_t>>& meshLinks){
-  triangles.clear();triangles.reserve(input.size());std::unordered_map<EdgeKey,std::vector<std::pair<int,int>>,Hash> edges;edges.reserve(input.size()*2);
-  for(auto source:input){int id=int(triangles.size());triangles.push_back({source,(source.v[0]+source.v[1]+source.v[2])*(1.f/3),{}});
-   for(int e=0;e<3;e++)edges[edgeKey(source.v[e],source.v[(e+1)%3])].push_back({id,e});}
-  for(auto& entry:edges){auto& matches=entry.second;if(matches.size()!=2)continue;
-   auto [a,ae]=matches[0];auto [b,be]=matches[1];auto& x=triangles[a].source;auto& y=triangles[b].source;
-   bool connected=x.mesh==y.mesh?(x.side[ae]==int(y.index)&&y.side[be]==int(x.index)):(meshLinks.count({x.mesh,y.mesh})||meshLinks.count({y.mesh,x.mesh}));
-   if(!connected)continue;
-   triangles[a].links.push_back({b,ae,be});triangles[b].links.push_back({a,be,ae});
+ void build(const std::vector<MeshTriangle>& input){
+  triangles.clear();triangles.reserve(input.size());std::unordered_map<uint64_t,int> ids;ids.reserve(input.size());
+  auto key=[](uint32_t mesh,uint32_t triangle){return (uint64_t(mesh)<<32)|triangle;};
+  for(auto source:input){ids.emplace(key(source.mesh,source.index),int(triangles.size()));triangles.push_back({source,(source.v[0]+source.v[1]+source.v[2])*(1.f/3),{}});}
+  for(size_t i=0;i<triangles.size();i++){
+   auto& source=triangles[i].source;
+   for(int edge=0;edge<3;edge++){
+    auto target=source.external[edge];bool external=target.mesh!=0;
+    if(!external)target={source.mesh,source.side[edge]};
+    if(target.triangle<0)continue;auto found=ids.find(key(target.mesh,uint32_t(target.triangle)));if(found==ids.end())continue;
+    auto& other=triangles[found->second].source;
+    for(int e=0;e<3;e++){
+     auto back=other.external[e];bool reciprocal=external?(back.mesh==source.mesh&&back.triangle==int(source.index)):
+       (!back.mesh&&other.mesh==source.mesh&&other.side[e]==int(source.index));
+     if(reciprocal){triangles[i].links.push_back({found->second,edge,e});break;}
+    }
+   }
   }
  }
  bool find(Vec start,Vec goal,float goalTolerance,std::vector<Vec>& out){
@@ -97,7 +100,7 @@ public:
    std::vector<int> parent(count,-1);std::vector<bool> closed(count);
    auto point=[&](int state){const auto& t=triangles[state/3].source;int edge=state%3;return (t.v[edge]+t.v[(edge+1)%3])*.5f;};
    auto expand=[&](int triangle,Vec pos,float g,int previous){
-    for(auto link:triangles[triangle].links){int next=link.triangle*3+link.otherEdge;auto p=point(next);float nextCost=g+engine::length(p-pos);
+    for(auto link:triangles[triangle].links){int next=link.triangle*3+link.otherEdge;auto p=point(next);auto& t=triangles[triangle].source;auto exit=(t.v[link.edge]+t.v[(link.edge+1)%3])*.5f;float nextCost=g+engine::length(exit-pos)+engine::length(p-exit);
      if(nextCost<cost[next]){cost[next]=nextCost;parent[next]=previous;open.push({nextCost+engine::length(to-p),next});}}
    };
    expand(first,from,0,-1);int finish=-1;
@@ -106,7 +109,13 @@ public:
    }
    if(finish<0)return false;
    std::vector<Vec> raw;std::vector<int> ids;
-   for(int s=finish;s>=0;s=parent[s]){raw.push_back(point(s));ids.push_back(s/3);}
+   for(int s=finish;s>=0;s=parent[s]){
+    raw.push_back(point(s));ids.push_back(s/3);
+    int previous=parent[s]>=0?parent[s]/3:first;
+    for(auto link:triangles[previous].links)if(link.triangle==s/3&&link.otherEdge==s%3){
+     const auto& t=triangles[previous].source;raw.push_back((t.v[link.edge]+t.v[(link.edge+1)%3])*.5f);ids.push_back(previous);break;
+    }
+   }
    std::reverse(raw.begin(),raw.end());std::reverse(ids.begin(),ids.end());raw.push_back(to);ids.push_back(last);
    // Shorten through connected triangles only. Try long shortcuts first, reducing
    // the lookahead on failure so obstacle detours do not trigger quadratic work.

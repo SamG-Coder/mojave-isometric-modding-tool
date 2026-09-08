@@ -21,7 +21,7 @@
 #include "native_navigation.hpp"
 using namespace engine;
 namespace {
-struct AttackOrder {uint32_t id{};Vec point{};void* cell{};bool ordered{},single{},held{};uint64_t started{},lastFire{},lastRepath{},lastReady{};unsigned approach{};} attack;
+struct AttackOrder {uint32_t id{};Vec point{},pursuitTarget{};void* cell{};bool ordered{},single{},held{};uint64_t started{},lastFire{},lastRepath{},lastReady{};unsigned approach{};} attack;
 bool altAiming{},lastVats{};float priorAimPitch{};bool aimOwned{};uint64_t attackRequests{};
 void cancelCombat();void combatTick();void attackClick(float,float);
 navigation::Search route;navigation::Follower follower;uint64_t routeReuses{},routeSwaps{};unsigned stuckRepairs{};size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};double plannerCpuMs{},lastPlannerStepMs{};unsigned plannerSteps{};size_t nativeTriangles{};unsigned nativeExpanded{};double nativePlanningMs{};std::string navigationSource="grid";
@@ -473,16 +473,22 @@ void combatTick(){
     float range=melee?(weapon?at<float>(weapon,0xFC)*100.f:95.f):(weapon?at<float>(weapon,0x124):1200.f);
     if(!std::isfinite(range)||range<=0)range=melee?95.f:1200.f;
     range=std::clamp(range,60.f,5000.f);
+    // Draw while approaching, so entering range does not start a fresh draw delay.
+    if(process&&ownedControls[0]&&!at<uint8_t>(process,0x135)&&(!attack.lastReady||now-attack.lastReady>=1000)){
+        run("TapControl 7");attack.lastReady=now;
+    }
     auto pos=at<Vec>(player(),0x30),eye=firingOrigin();float targetDistance=length(attack.point-eye);
     bool clear=shotClear(eye,attack.point,victim);
-    if(targetDistance>range||!clear){
+    if(!combat::canEngage(targetDistance,range,clear,active(),!victim||combatActor(victim))){
         releaseAttack();if(attack.single){stop();note="Shot is blocked or out of range";return;}
-        if(now-attack.lastRepath>=1000&&(route.state!=navigation::Search::State::Searching)&&(!moving||length(target-at<Vec>(victim,0x30))>range*1.5f)){
-            attack.lastRepath=now;auto centre=at<Vec>(victim,0x30);auto toward=normalized(Vec{pos.x-centre.x,pos.y-centre.y,0});
+        if(combat::refreshPursuit(now,attack.lastRepath,length(at<Vec>(victim,0x30)-attack.pursuitTarget),range,moving,route.state==navigation::Search::State::Searching)){
+            attack.lastRepath=now;auto centre=at<Vec>(victim,0x30);attack.pursuitTarget=centre;auto toward=normalized(Vec{pos.x-centre.x,pos.y-centre.y,0});
             float base=std::atan2(toward.y,toward.x);bool planned=false;
-            for(unsigned n=0;n<8;n++){float angle=base+float((attack.approach+n)%8)*.78539816f;Vec candidate=centre+Vec{std::cos(angle),std::sin(angle),0}*(range*.7f),floor{};
+            // Prefer the nearest side again on each update, then alternate sides.
+            constexpr int offsets[]{0,1,-1,2,-2,3,-3,4};
+            for(unsigned n=0;n<8;n++){float angle=base+float(offsets[n])*.78539816f;Vec candidate=centre+Vec{std::cos(angle),std::sin(angle),0}*(range*.7f),floor{};
                 if(groundProbe(candidate,floor)&&shotClear(floor+Vec{0,0,95},attack.point,victim)){
-                    planDestination(floor,0);attack.approach=(attack.approach+n+1)%8;planned=true;note="Moving to attack position";break;
+                    planDestination(floor,0);planned=true;note="Moving to attack position";break;
                 }
             }
             if(!planned){stopMovement();note="No clear attack position found";}
@@ -493,7 +499,7 @@ void combatTick(){
     if(!ownedControls[0]){releaseAttack();note="Attack input owned by another control system";return;}
     if(!process)return;
     if(!at<uint8_t>(process,0x135)){
-        releaseAttack();if(now-attack.lastReady>1000){run("TapControl 7");attack.lastReady=now;}note="Readying weapon";return;
+        releaseAttack();note="Readying weapon";return;
     }
     if(!combat::canAttack(targetDistance,range,clear,moving,active(),!victim||combatActor(victim))){releaseAttack();return;}
     // Submit mapped native input, preserving ammunition, reloads and animation gates.
@@ -554,7 +560,7 @@ void input(){
     }if(r&&!lastR)stop();lastL=l;lastR=r;
     static uint64_t lastHover{};auto now=GetTickCount64();
     if(now-lastHover>100){bool overPrompt=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h)overPrompt=true;lastHover=now;if(!overPrompt){hoverRef=0;Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){auto ref=parentReference(object);if(interactable(ref))hoverRef=at<uint32_t>(ref,0xC);}}}
-    if(GetAsyncKeyState(VK_ESCAPE)&0x8000)stop();if(altAiming&&!attack.ordered)stopMovement();walk();combatTick();
+    if(GetAsyncKeyState(VK_ESCAPE)&0x8000)stop();if(altAiming&&!attack.ordered)stopMovement();combatTick();walk();
 }
 void capture(IDirect3DDevice9* device){
     IDirect3DSurface9* back{};IDirect3DSurface9* staging{};IDirect3DSurface9* resolved{};

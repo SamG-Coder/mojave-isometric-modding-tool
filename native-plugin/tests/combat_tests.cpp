@@ -19,5 +19,14 @@ int main(){
  check(std::abs(muzzleAim.pitch)<.001f,"Level muzzle-to-torso shot aims vertically");
  check(std::abs(muzzleAim.yaw-std::atan2(80.f,100.f))<.001f,"Muzzle lateral offset ignored");
  auto crouched=combat::aim({20,0,70},{100,100,40});check(crouched.pitch>0,"Lower torso target not tracked");
+ // Engagement is decided before movement is stopped, independent of a pending route.
+ check(combat::canEngage(199,200,true,true,true),"In-range chase did not yield to attack");
+ check(!combat::canEngage(199,200,false,true,true),"Chase fired through obstruction");
+ check(combat::refreshPursuit(100,0,0,1000,true,true),"First approach waited for timer");
+ check(!combat::refreshPursuit(1249,1000,500,1000,true,true),"Moving target bypassed bounded update rate");
+ check(combat::refreshPursuit(1250,1000,100,1000,true,true),"Stale pending route prevented pursuit update");
+ check(!combat::refreshPursuit(1250,1000,5,1000,true,false),"Minor target movement restarted pursuit");
+ check(combat::refreshPursuit(1250,1000,0,1000,false,false),"Ended approach delayed fresh pursuit");
+ check(!combat::refreshPursuit(1250,1000,0,1000,false,true),"Unchanged pending search restarted");
  std::cout<<"World aim and combat gating checks passed.\n";
 }
