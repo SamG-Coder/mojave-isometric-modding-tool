@@ -55,3 +55,12 @@ Mouse GetDeviceState results are chained through the existing device implementat
 Picking uses the camera and viewport from the last presented world frame. Marker projection uses the current world-camera submission, including the renderer's actual direction/up/right vectors. The accepted collision point is retained after ground validation. This avoids camera-frame mismatch and vertical drift from replacing a hit with a ground probe. The reticle image visibility is temporarily overridden; its prior value is restored outside isometric gameplay.
 
 Build and run MojaveIsoCameraTests and MojaveIsoWheelTests from the Release output for projection and wheel-state regression checks.
+
+
+## Experimental live combat
+
+Hold Alt to aim using a HUD-colour crosshair; character yaw and pitch follow the world point, while the camera remains independent. Alt-click an actor selects a persistent attack order and highlights the target. Alt-click empty space requests a single native attack. Normal ground clicks and right-click cancel an attack. Aiming without an attack order stops existing movement, preventing aim rotation from steering a walking route off course.
+
+The controller reads the equipped weapon's base range and automatic flag, requests native attack input, and searches sampled positions around an obstructed/out-of-range target. Automatic weapons hold the mapped attack control; other weapons receive periodic taps subject to native animation, ammo and reload processing. Character death, target death/unload/cell change, menus and focus loss cancel the order. Orders also expire after two minutes.
+
+Native VATS remains available. Entering a menu cancels live fire; V explicitly cancels the order before the normal VATS key is processed. Exiting VATS does not resume firing. Forcing native VATS to select the isometric target is not implemented. Controller input, weapon-mod-adjusted effective ranges, projectile alignment for all weapons and comprehensive melee behaviour remain unverified. Selected target and attack-request count are exposed in status.json; a submitted input is not evidence that a shot hit.

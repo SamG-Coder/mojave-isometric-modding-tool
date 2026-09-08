@@ -77,3 +77,10 @@ Tests pass for a narrow doorway, cache reuse/reset, blocked routes, height chang
 A budgeted direct-corridor phase now precedes A*. It samples floor support and body clearance in 32-unit segments, falls back to A* on obstruction, and never starts unvalidated movement. A* equal-score ties prefer the candidate with less remaining distance. Status now reports planning_ms (the last completed search duration) and direct_route.
 
 Tests: an unobstructed 256-unit route completes in one 12-segment update with zero A* expansions; obstacle detours, floor gaps, doorway clearance, cancellation and height tests pass. Doorway case uses 12 expansions, 121 collision callbacks and 220 cache hits. These are synthetic checks, not measured live click-to-walk latency. The updated DLL is staged for next launch.
+
+
+## Combat foundation (staged, not live-verified)
+
+Release build passes. Unit checks cover world-space yaw/pitch and attack gating for range, obstruction, movement, menu state and dead targets. Navigation and input regressions pass. Attack requests use mapped native input, allowing the game to handle firing animations and ammunition. Physical attack remains disabled while script input is enabled only for the attack control owned by this plugin.
+
+Live projectile direction, ammo consumption, sustained fire, melee reach, approach routes, cancellation and VATS handoff still require playtesting after the DLL reload. Native VATS target preselection is not implemented. Do not treat compile/unit success as proof of working combat.

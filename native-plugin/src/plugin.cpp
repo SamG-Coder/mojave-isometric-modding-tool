@@ -16,8 +16,12 @@
 #include "pathfinder.hpp"
 #include "overlay.hpp"
 #include "cutaway.hpp"
+#include "combat_math.hpp"
 using namespace engine;
 namespace {
+struct AttackOrder {uint32_t id{};Vec point{};void* cell{};bool ordered{},single{},held{};uint64_t started{},lastFire{},lastRepath{},lastReady{};unsigned approach{};} attack;
+bool altAiming{},lastVats{};float priorAimPitch{};bool aimOwned{};uint64_t attackRequests{};
+void cancelCombat();void combatTick();void attackClick(float,float);
 navigation::Search route;size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};
 struct NearbyAction{uint32_t id;Vec pos;std::string text;float range;};std::vector<NearbyAction> nearby;
 struct ActionBox{uint32_t id;float x,y,w,h;};std::vector<ActionBox> actionBoxes;
@@ -49,13 +53,28 @@ double number(const std::string& text){
     if(!scripts)return 0;auto& code=expressions[text];if(!code)code=scripts->CompileExpression(text.c_str());
     ScriptResult out{};if(code&&scripts->CallFunction(code,player(),nullptr,&out,0)&&out.type==1)return out.number;return 0;
 }
-void stop(){route.cancel();waypoint=0;interactionId=0;pendingActivation=false;if(moving)movement(0);if(heldForward>=0){run("ReleaseKey "+std::to_string(heldForward));heldForward=-1;}moving=false;}
+void stopMovement(){route.cancel();waypoint=0;interactionId=0;pendingActivation=false;if(moving)movement(0);if(heldForward>=0){run("ReleaseKey "+std::to_string(heldForward));heldForward=-1;}moving=false;}
+void cancelCombat(){
+    if(attack.held){run("ReleaseControl 4");attack.held=false;}
+    attack.ordered=false;altAiming=false;
+    if(aimOwned&&player()){at<float>(player(),0x24)=priorAimPitch;aimOwned=false;}
+}
+void stop(){cancelCombat();stopMovement();}
 void restoreProjection(){if(savedCamera){at<Frustum>(savedCamera,0xDC)=savedFrustum;savedCamera=nullptr;}}
 void ownControls(bool acquire){
     if(acquire==controlsAcquired)return;
     for(int i=0;i<3;i++){
         if(acquire){ownedControls[i]=number("IsControlDisabled "+std::to_string(controls[i]))==0;if(ownedControls[i])run("DisableControl "+std::to_string(controls[i]));}
         else if(ownedControls[i]){run("EnableControl "+std::to_string(controls[i]));ownedControls[i]=false;}
+    }
+    if(acquire&&ownedControls[0]){
+        // DisableControl blocks physical AND scripted input. Keep physical attack
+        // blocked, but allow mapped native attack requests from this controller.
+        auto inputState=global(0x11F35CC);if(inputState){
+            auto key=at<uint8_t>(inputState,0x1B94+4),button=at<uint8_t>(inputState,0x1BB0+4);
+            if(key!=255)run("EnableKey "+std::to_string(key)+" 2");
+            if(button!=255)run("EnableKey "+std::to_string(256+button)+" 2");
+        }
     }
     controlsAcquired=acquire;
 }
@@ -271,10 +290,10 @@ bool corridorClear(Vec a,Vec b){
     return true;
 }
 void planDestination(Vec hit,uint32_t id){
-    stop();target=hit;interactionId=id;markerUntil=GetTickCount64()+3000;
+    stopMovement();target=hit;interactionId=id;markerUntil=GetTickCount64()+3000;
     route.begin(at<Vec>(player(),0x30),target,id?100.f:20.f);routeStarted=GetTickCount64();note="Planning route";
 }
-void nearbyDestination(uint32_t id){auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
+void nearbyDestination(uint32_t id){cancelCombat();auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
 void beginWalking(){
     lastPlanningMs=GetTickCount64()-routeStarted;
     moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=at<Vec>(player(),0x30);waypoint=route.path.size()>1?1:0;
@@ -283,7 +302,7 @@ void beginWalking(){
     note=interactionId?"Following route to interaction":"Following route";
 }
 void destination(float x,float y){
-    if(!active())return;
+    if(!active())return;cancelCombat();
     void* hitObject{};Vec hit{};
     if(!pick(x,y,hit,hitObject)){note="No collision surface under cursor";stop();return;}
     Vec pos=at<Vec>(player(),0x30);if(length(hit-pos)>6000){note="Destination too far away";stop();return;}
@@ -305,23 +324,23 @@ void destination(float x,float y){
 }
 void walk(){
     if(route.state==navigation::Search::State::Searching){
-        if(!active()){stop();return;}
+        if(!active()){stopMovement();return;}
         route.step(groundProbe,corridorClear,12,2.f);
         if(route.state==navigation::Search::State::Found)beginWalking();
-        else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){stop();note="No reachable route found";}
+        else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){stopMovement();note="No reachable route found";}
     }
-    if(!moving)return;if(!active()){stop();return;}
+    if(!moving)return;if(!active()){stopMovement();return;}
     Vec pos=at<Vec>(player(),0x30),delta=target-pos;
-    if(interactionId&&(!interactable(reference(interactionId))||at<void*>(reference(interactionId),0x40)!=at<void*>(player(),0x40))){stop();note="Interaction target no longer available";return;}
+    if(interactionId&&(!interactable(reference(interactionId))||at<void*>(reference(interactionId),0x40)!=at<void*>(player(),0x40))){stopMovement();note="Interaction target no longer available";return;}
     float reach=interactionId?110.f:24.f;
     if(std::sqrt(delta.x*delta.x+delta.y*delta.y)<reach&&std::abs(delta.z)<(interactionId?150.f:45.f)){
-        uint32_t id=interactionId;stop();markerUntil=GetTickCount64()+900;
+        uint32_t id=interactionId;stopMovement();markerUntil=GetTickCount64()+900;
         if(id){interactionId=id;pendingActivation=true;activationStarted=GetTickCount64();ownControls(false);note="Approaching interaction camera";}
         else note="Destination reached";
         return;
     }
     auto now=GetTickCount64();if(length(pos-lastPos)>12){lastPos=pos;lastProgress=now;}
-    if(now-lastProgress>1800||now-moveStarted>30000){stop();note="Movement stopped: blocked or timed out";return;}
+    if(now-lastProgress>1800||now-moveStarted>30000){stopMovement();note="Movement stopped: blocked or timed out";return;}
     while(waypoint+1<route.path.size()&&length(route.path[waypoint]-pos)<12)++waypoint;
     if(waypoint<route.path.size())delta=route.path[waypoint]-pos;
     static uint64_t lastCorridorCheck{};
@@ -333,9 +352,88 @@ void walk(){
     at<float>(player(),0x2c)=atan2f(delta.x,delta.y);
     movement(1|512);
 }
+bool combatActor(void* ref){
+    if(!ref||ref==player())return false;auto type=at<uint8_t>(ref,4);
+    return (type==0x3B||type==0x3C)&&!(at<uint32_t>(ref,8)&0x820)&&at<uint32_t>(ref,0x108)!=1&&at<uint32_t>(ref,0x108)!=2;
+}
+Vec bodyPoint(void* ref){
+    auto pos=at<Vec>(ref,0x30);auto render=at<void*>(ref,0x64);auto node=render?at<void*>(render,0x14):nullptr;auto bound=node?at<void*>(node,0x20):nullptr;
+    if(bound){auto centre=at<Vec>(bound,0);if(length(centre-pos)<250)return centre;}
+    return pos+Vec{0,0,65};
+}
+void facePoint(Vec point){
+    if(!aimOwned){priorAimPitch=at<float>(player(),0x24);aimOwned=true;}
+    auto aim=combat::aim(at<Vec>(player(),0x30)+Vec{0,0,95},point);
+    at<float>(player(),0x2C)=aim.yaw;at<float>(player(),0x24)=std::clamp(aim.pitch,-1.35f,1.35f);
+}
+bool shotClear(Vec from,Vec to,void* victim){
+    auto delta=to-from;auto shotDistance=length(delta);if(shotDistance<1)return true;
+    Vec hit{};void* object{};
+    if(!raycast(from,delta*(1/shotDistance),hit,object))return true;
+    return length(hit-from)>=shotDistance-8||(victim&&parentReference(object)==victim);
+}
+void releaseAttack(){if(attack.held){run("ReleaseControl 4");attack.held=false;}}
+void attackClick(float x,float y){
+    Vec point{};void* object{};if(!pick(x,y,point,object))return;
+    auto ref=parentReference(object);cancelCombat();stopMovement();
+    attack={};attack.id=combatActor(ref)?at<uint32_t>(ref,0xC):0;
+    attack.point=attack.id?bodyPoint(ref):point;attack.single=!attack.id;
+    attack.cell=at<void*>(player(),0x40);attack.ordered=true;attack.started=GetTickCount64();
+    note=attack.id?"Attack target selected":"Single attack at cursor";
+}
+void combatTick(){
+    auto now=GetTickCount64();
+    if(!active()||!player()||at<uint32_t>(player(),0x108)==1||at<uint32_t>(player(),0x108)==2){cancelCombat();return;}
+    if(!attack.ordered){
+        if(altAiming&&!lastMiddle){Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){auto ref=parentReference(object);facePoint(combatActor(ref)?bodyPoint(ref):hit);}}
+        else if(aimOwned){at<float>(player(),0x24)=priorAimPitch;aimOwned=false;}
+        return;
+    }
+    auto victim=attack.id?reference(attack.id):nullptr;
+    if(attack.cell!=at<void*>(player(),0x40)||(attack.id&&(!combatActor(victim)||at<void*>(victim,0x40)!=attack.cell))){stop();note="Attack target no longer available";return;}
+    if(now-attack.started>120000){stop();note="Attack order timed out";return;}
+    if(victim)attack.point=bodyPoint(victim);
+    auto process=at<void*>(player(),0x68);auto entry=process&&at<uint8_t>(process,0x28)<=1?at<void*>(process,0x114):nullptr;
+    auto weapon=entry?at<void*>(entry,8):nullptr;auto type=weapon?at<uint8_t>(weapon,0xF4):0;
+    bool melee=type<=2,automatic=weapon&&(at<uint8_t>(weapon,0x100)&2);
+    float range=melee?(weapon?at<float>(weapon,0xFC)*100.f:95.f):(weapon?at<float>(weapon,0x124):1200.f);
+    if(!std::isfinite(range)||range<=0)range=melee?95.f:1200.f;
+    range=std::clamp(range,60.f,5000.f);
+    auto pos=at<Vec>(player(),0x30),eye=pos+Vec{0,0,95};float targetDistance=length(attack.point-eye);
+    bool clear=shotClear(eye,attack.point,victim);
+    if(targetDistance>range||!clear){
+        releaseAttack();if(attack.single){stop();note="Shot is blocked or out of range";return;}
+        if(now-attack.lastRepath>=1000&&(route.state!=navigation::Search::State::Searching)&&(!moving||length(target-at<Vec>(victim,0x30))>range*1.5f)){
+            attack.lastRepath=now;auto centre=at<Vec>(victim,0x30);auto toward=normalized(Vec{pos.x-centre.x,pos.y-centre.y,0});
+            float base=std::atan2(toward.y,toward.x);bool planned=false;
+            for(unsigned n=0;n<8;n++){float angle=base+float((attack.approach+n)%8)*.78539816f;Vec candidate=centre+Vec{std::cos(angle),std::sin(angle),0}*(range*.7f),floor{};
+                if(groundProbe(candidate,floor)&&shotClear(floor+Vec{0,0,95},attack.point,victim)){
+                    planDestination(floor,0);attack.approach=(attack.approach+n+1)%8;planned=true;note="Moving to attack position";break;
+                }
+            }
+            if(!planned){stopMovement();note="No clear attack position found";}
+        }
+        return;
+    }
+    stopMovement();facePoint(attack.point);
+    if(!ownedControls[0]){releaseAttack();note="Attack input owned by another control system";return;}
+    if(!process)return;
+    if(!at<uint8_t>(process,0x135)){
+        releaseAttack();if(now-attack.lastReady>1000){run("TapControl 7");attack.lastReady=now;}note="Readying weapon";return;
+    }
+    if(!combat::canAttack(targetDistance,range,clear,moving,active(),!victim||combatActor(victim))){releaseAttack();return;}
+    // Submit mapped native input, preserving ammunition, reloads and animation gates.
+    if(automatic&&!attack.single){if(!attack.held){run("HoldControl 4");attack.held=true;++attackRequests;}}
+    else {
+        float rate=weapon?at<float>(weapon,0x134):2.f;if(!std::isfinite(rate)||rate<=0)rate=2;
+        auto interval=uint64_t(std::clamp(1000.f/rate,100.f,2000.f));
+        if(now-attack.lastFire>=interval){run("TapControl 4");attack.lastFire=now;++attackRequests;if(attack.single){attack.ordered=false;}}
+    }
+    note="Attacking selected target";
+}
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
-    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<route.path.size()<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
+    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<route.path.size()<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);
@@ -353,6 +451,7 @@ void poll(){
         else if(!strcmp(op,"stop"))stop();
         else if(!strcmp(op,"inspect")){void* object{};Vec point{};hoverRef=0;if(pick(setting("x",cursorX),setting("y",cursorY),point,object)){auto ref=parentReference(object);hoverRef=ref?at<uint32_t>(ref,0xC):0;}status();}
         else if(!strcmp(op,"interact"))nearbyDestination(uint32_t(setting("id",0)));
+        else if(!strcmp(op,"attack"))attackClick(setting("x",cursorX),setting("y",cursorY));
         else if(!strcmp(op,"move"))destination(setting("x",width/2),setting("y",height/2));
         else if(!strcmp(op,"console")){char line[512];GetPrivateProfileStringA("command","text","",line,512,file.c_str());if(*line){run(line);note="Console command submitted; inspect frame for result";}}
     }
@@ -362,6 +461,8 @@ void input(){
     DWORD foreground{};GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     if(foreground!=GetCurrentProcessId()){mouseDeltaX=0;mouseDeltaY=0;stop();lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;return;}
     bool f=(GetAsyncKeyState(VK_F8)&0x8000)!=0;if(f&&!lastF){requested=!enabled;if(requested)setEnabled(true);else{pendingDisable=true;stop();}}lastF=f;
+    altAiming=(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
+    bool vats=(GetAsyncKeyState('V')&0x8000)!=0;if(vats&&!lastVats){stop();note="VATS handoff: live attack cancelled";}lastVats=vats;
     bool l=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,r=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
     if(!active()){if(!pendingActivation)stop();lastL=l;lastR=r;lastMiddle=false;return;}
     void* in=global(0x11F35CC);if(in){
@@ -373,12 +474,13 @@ void input(){
         int wheel=wheelInput.take();if(wheel){distance=std::clamp(distance-wheel*.5f,200.f,4000.f);span=std::clamp(span-wheel*.5f,300.f,5000.f);}}
     if(GetAsyncKeyState(VK_OEM_4)&0x8000)desiredYaw-=100.f*frameDt;
     if(GetAsyncKeyState(VK_OEM_6)&0x8000)desiredYaw+=100.f*frameDt;
-    if(l&&!lastL&&!lastMiddle){bool selected=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h){nearbyDestination(box.id);selected=true;break;}
+    if(l&&!lastL&&!lastMiddle&&altAiming){attackClick(cursorX,cursorY);}
+    else if(l&&!lastL&&!lastMiddle){bool selected=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h){nearbyDestination(box.id);selected=true;break;}
         if(!selected)destination(cursorX,cursorY);
     }if(r&&!lastR)stop();lastL=l;lastR=r;
     static uint64_t lastHover{};auto now=GetTickCount64();
     if(now-lastHover>100){bool overPrompt=false;for(auto box:actionBoxes)if(cursorX>=box.x&&cursorY>=box.y&&cursorX<box.x+box.w&&cursorY<box.y+box.h)overPrompt=true;lastHover=now;if(!overPrompt){hoverRef=0;Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){auto ref=parentReference(object);if(interactable(ref))hoverRef=at<uint32_t>(ref,0xC);}}}
-    if(GetAsyncKeyState(VK_ESCAPE)&0x8000)stop();walk();
+    if(GetAsyncKeyState(VK_ESCAPE)&0x8000)stop();if(altAiming&&!attack.ordered)stopMovement();walk();combatTick();
 }
 void capture(IDirect3DDevice9* device){
     IDirect3DSurface9* back{};IDirect3DSurface9* staging{};IDirect3DSurface9* resolved{};
@@ -470,7 +572,7 @@ void nativeInteraction(){
     if(!label)return;
     auto set=[&](uint32_t id,float value){reinterpret_cast<void(__thiscall*)(void*,uint32_t,float,bool)>(0xA012D0)(label,id,value,true);};
     set(0xFA3,0);
-    if(!active()||!hoverRef||!displayCamera.valid)return;
+    if(!active()||altAiming||attack.ordered||!hoverRef||!displayCamera.valid)return;
     auto ref=reference(hoverRef);if(!interactable(ref)||ref==player()||at<void*>(ref,0x40)!=at<void*>(player(),0x40))return;
     auto p=at<Vec>(ref,0x30),delta=p-at<Vec>(player(),0x30);
     if(length(delta)>350||std::abs(delta.z)>150)return;
@@ -508,10 +610,19 @@ void present(){
     D3DVIEWPORT9 vp{};if(SUCCEEDED(device->GetViewport(&vp))){width=float(vp.Width);height=float(vp.Height);}
     if(active()){
         destinationMarker(device);
+        if(attack.ordered&&attack.id){float sx{},sy{};if(renderCamera.project(attack.point,sx,sy)){
+            std::array<D3DRECT,24> marks{};DWORD count=0;
+            for(int i=0;i<24;i++){float a=i*6.2831853f/24;LONG x=LONG(sx+std::cos(a)*16),y=LONG(sy+std::sin(a)*16);
+                if(x>=1&&y>=1&&x<LONG(width)-2&&y<LONG(height)-2)marks[count++]={x-1,y-1,x+2,y+2};}
+            if(count)device->Clear(count,marks.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+        }}
         // D3D9 Clear rects work outside BeginScene and do not alter shader state.
         LONG x=LONG(cursorX),y=LONG(cursorY);std::array<D3DRECT,13> arrow{};DWORD count=0;
         for(LONG i=0;i<12;i++){LONG rightEdge=std::min(LONG(width),x+1+i/2),bottom=std::min(LONG(height),y+i+1);if(y+i>=LONG(height))break;arrow[count++]={x,y+i,rightEdge,bottom};}
-        if(count)device->Clear(count,arrow.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+        if(altAiming){
+            std::array<D3DRECT,4> reticle{{{x-10,y-1,x-3,y+2},{x+4,y-1,x+11,y+2},{x-1,y-10,x+2,y-3},{x-1,y+4,x+2,y+11}}};
+            for(auto rect:reticle){rect.x1=std::max(0L,rect.x1);rect.y1=std::max(0L,rect.y1);rect.x2=std::min(LONG(width),rect.x2);rect.y2=std::min(LONG(height),rect.y2);if(rect.x2>rect.x1&&rect.y2>rect.y1)device->Clear(1,&rect,D3DCLEAR_TARGET,hudColour(),1,0);}
+        }else if(count)device->Clear(count,arrow.data(),D3DCLEAR_TARGET,hudColour(),1,0);
         displayCamera=renderCamera;
     }
     drawWorldUI(device);

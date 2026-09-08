@@ -24,3 +24,6 @@ target_compile_features(MojaveIsoCameraTests PRIVATE cxx_std_20)
 
 add_executable(MojaveIsoPathTests tests/pathfinder_tests.cpp)
 target_compile_features(MojaveIsoPathTests PRIVATE cxx_std_20)
+
+add_executable(MojaveIsoCombatTests tests/combat_tests.cpp)
+target_compile_features(MojaveIsoCombatTests PRIVATE cxx_std_20)
