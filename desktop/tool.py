@@ -47,6 +47,9 @@ def install_plugin():
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(NATIVE, backup)
     shutil.copy2(source, NATIVE)
+    launcher = BUILD.parent / "MojaveIsoLaunch.exe"
+    if launcher.exists():
+        shutil.copy2(launcher, ROOT / "MojaveIsoLaunch.exe")
 
 class Tool(tk.Tk):
     def __init__(self):

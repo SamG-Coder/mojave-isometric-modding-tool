@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <cmath>
+#include "camera_math.hpp"
 // FalloutNV.exe 1.4.0.525 only. Reverse-engineered layout references:
 // jazzisparis/JIP-LN-NVSE internal/netimmerse.h, jip_core.cpp, GameOSDepend.h;
 // carxt/JohnnyGuitarNVSE CameraOverride.cpp and ActorMover declarations.
@@ -12,12 +13,6 @@ namespace engine {
 template<class T> T& at(void* p, size_t offset) { return *reinterpret_cast<T*>(static_cast<uint8_t*>(p)+offset); }
 inline void* global(uintptr_t address) { return *reinterpret_cast<void**>(address); }
 inline void* player() { return global(0x11DEA3C); }
-struct Vec { float x{},y{},z{}; Vec operator+(Vec b) const{return {x+b.x,y+b.y,z+b.z};} Vec operator-(Vec b) const{return {x-b.x,y-b.y,z-b.z};} Vec operator*(float v) const{return {x*v,y*v,z*v};} };
-inline float length(Vec v){return std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);}
-inline Vec normalized(Vec v){float n=length(v);return n>0?v*(1/n):Vec{};}
-struct Mat { float m[3][3]; };
-struct Frustum {float left,right,top,bottom,nearPlane,farPlane; bool ortho; char pad[3];};
-static_assert(sizeof(Frustum)==0x1c);
 inline void* cameraChild(void* node){void** children=at<void**>(node,0xA0);return children?children[0]:nullptr;}
 inline bool gameMode(){void* ui=global(0x11D8A80);return ui&&at<uint32_t>(ui,0xC)==1;}
 inline void movement(uint16_t flags){
@@ -44,8 +39,6 @@ inline bool raycast(Vec origin,Vec direction,Vec& hit,void*& object){
     if(!std::isfinite(fraction)||fraction<0||fraction>=0.99999f)return false;
     hit=origin+direction*(distance*fraction);return true;
 }
-inline float dot(Vec a,Vec b){return a.x*b.x+a.y*b.y+a.z*b.z;}
-inline Vec cross(Vec a,Vec b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
 inline bool dialogue(){return reinterpret_cast<bool*>(0x11F308F)[1009];}
 // Resolve collision geometry through BSFadeNode to its owning reference (JIP adapter).
 inline void* parentReference(void* node){

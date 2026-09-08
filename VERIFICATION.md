@@ -35,3 +35,9 @@ The mouse GetDeviceState hook now removes wheel deltas from the result sent to t
 Validated: Release DLL and wheel-test executable build; wheel ownership, signed magnitude, multiple-poll accumulation, single consumption, menu passthrough and load-reset checks pass. Version 0.4 and its mouse hook loaded in New Vegas. Increasing span to 3000 and camera distance to 2200, then reloading the dedicated test save, retained those settings and resumed confirmed orthographic rendering. Previous camera settings were restored afterward.
 
 The reported physical mouse-wheel to first-person threshold sequence still needs a human playtest; the automated runtime check changed zoom through the plugin command interface. No vanilla first-person threshold setting was edited.
+
+## Camera and pointer regression (native version 0.5)
+
+Committed input changes isolate mouse X/Y deltas as well as wheel input from vanilla look. Middle drag changes yaw and pitch with smoothing and pitch limits. Pick rays use the last displayed renderer camera; destination markers use the current renderer camera. Ground validation retains the original hit point. Pointer/marker colour follows uHUDColor. Reticle image visibility is temporarily hidden and restored when releasing gameplay ownership.
+
+Validated: Release build, 1,176 pixel-to-world-to-pixel checks across pitch/yaw, orthographic/perspective and nonzero viewport offsets, and existing wheel regression checks. The final installed DLL hash matches the built DLL. Captured in-game imagery shows the amber marker/pointer and no centre crosshair. Live click diagnostics reported reprojection errors of 0.000533 and 0.003386 pixels. Live camera diagnostics showed pitch 30 degrees with changed yaw. This measures projection alignment; collision geometry can still differ from visible meshes, and obstacle navigation remains a separate limitation.

@@ -34,9 +34,9 @@ Operations: configure, enable, disable, move (screen coordinates), stop, capture
 
 ## Boundaries
 
-Click walking steers toward a collision hit using the normal player input path. It is not navmesh route finding. Arrival tolerance is 24 game units, obstruction timeout 1.8 seconds, and travel timeout 30 seconds. Elevated hits are rejected. Right click, menus, focus-loss detection and F8 cancel movement. Mouse attack and aim are suppressed while the mode owns them; previous disabled-control state is respected.
+Click walking steers toward a collision hit using the normal player input path. It is not navmesh route finding. Arrival tolerance is 24 game units, obstruction timeout 1.8 seconds, and travel timeout 30 seconds. Local ground probes reject walls and steep surfaces; elevation alone is not a rejection. Right click, menus, focus-loss detection and F8 cancel movement. Mouse attack and aim are suppressed while the mode owns them; previous disabled-control state is respected.
 
-Scene cutaways, roof hiding, navigation around obstacles, mouse-driven object activation and combat conversion are not implemented. Orthographic culling, distant terrain, interiors, dialogue, VATS and scripted cameras need further compatibility testing. The renderer is hooked, not replaced; shader/material authoring and a full render-graph inspector are future work.
+Scene cutaways, roof hiding, navigation around obstacles and combat conversion are not implemented. Walk-to-activate for collision-picked doors and actors is experimental and not yet fully validated. Orthographic culling, distant terrain, interiors, dialogue, VATS and scripted cameras need further compatibility testing. The renderer is hooked, not replaced; shader/material authoring and a full render-graph inspector are future work.
 
 ## Source references and licensing
 
@@ -47,3 +47,11 @@ This project is provided under GPL-3.0; see the parent `LICENSE`. Engine layout 
 - https://github.com/xNVSE/NVSE
 
 No Bethesda assets or original game executable are included in the source package.
+
+## Input and projection changes (0.5)
+
+Mouse GetDeviceState results are chained through the existing device implementation. Owned X/Y movement and wheel deltas are removed before the vanilla camera consumes them. Middle drag changes yaw and pitch; free movement moves a single custom pointer. Menu and normal-camera input pass through.
+
+Picking uses the camera and viewport from the last presented world frame. Marker projection uses the current world-camera submission, including the renderer's actual direction/up/right vectors. The accepted collision point is retained after ground validation. This avoids camera-frame mismatch and vertical drift from replacing a hit with a ground probe. The reticle image visibility is temporarily overridden; its prior value is restored outside isometric gameplay.
+
+Build and run MojaveIsoCameraTests and MojaveIsoWheelTests from the Release output for projection and wheel-state regression checks.

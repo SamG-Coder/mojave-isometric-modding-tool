@@ -15,13 +15,14 @@
 #include "wheel_input.hpp"
 using namespace engine;
 namespace {
-WheelInput wheelInput;
+WheelInput wheelInput;std::atomic<int> mouseDeltaX{},mouseDeltaY{};
+CameraSample renderCamera{},displayCamera{};float lastPickError=-1;
 std::string root, bridge; Console* console{}; Scripts* scripts{};
 bool enabled{},requested{},hooksReady{},moving{},captureRequested{},lastL{},lastF{},lastR{};
 bool autoEnable=true; uint64_t autoReadySince{};
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
 uint32_t interactionId{},hoverRef{};uint64_t markerUntil{},activationStarted{},lastFrameTick{};
-float cameraBlend=0, frameDt=0.016f, desiredYaw=45;
+float cameraBlend=0, frameDt=0.016f, desiredYaw=45,desiredPitch=50;
 bool priorThird{}; std::array<bool,3> ownedControls{};
 int heldForward=-1;
 constexpr int controls[]{4,6,13};
@@ -49,11 +50,12 @@ void ownControls(bool acquire){
     }
     controlsAcquired=acquire;
 }
+void updateReticle(bool hide);
 void setEnabled(bool value){
     if(value==enabled)return;
-    wheelInput.reset();
+    wheelInput.reset();mouseDeltaX=0;mouseDeltaY=0;
     if(value&&(!hooksReady||!player()||!gameMode())){note="Load a game before enabling the camera";return;}
-    if(!value){stop();restoreProjection();enabled=false;ownControls(false);cameraBlend=0;if(priorThird==false&&player())reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),true);note="Normal controls restored";return;}
+    if(!value){updateReticle(false);displayCamera.valid=renderCamera.valid=false;stop();restoreProjection();enabled=false;ownControls(false);cameraBlend=0;if(priorThird==false&&player())reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),true);note="Normal controls restored";return;}
     priorThird=at<uint8_t>(player(),0x64C)!=0;if(!priorThird)reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
     ownControls(true);
     enabled=true;cursorX=width/2;cursorY=height/2;note="Isometric prototype enabled";
@@ -69,7 +71,10 @@ HRESULT WINAPI mouseStateHook(void* device,DWORD bytes,void* buffer){
     HRESULT result=found->second(device,bytes,buffer);
     void* inputState=global(0x11F35CC);
     if(SUCCEEDED(result)&&buffer&&(bytes==16||bytes==20)&&inputState&&device==at<void*>(inputState,0x30)){
-        wheelInput.filter(at<long>(buffer,8),active());
+        bool owns=active();wheelInput.filter(at<long>(buffer,8),owns);
+        if(owns){mouseDeltaX.fetch_add(at<long>(buffer,0));mouseDeltaY.fetch_add(at<long>(buffer,4));at<long>(buffer,0)=at<long>(buffer,4)=0;}
+        else {mouseDeltaX=0;mouseDeltaY=0;}
+
     }
     return result;
 }
@@ -92,6 +97,10 @@ void __fastcall setupCameraHook(void* renderer,void*,Vec* pos,Vec* dir,Vec* camU
         if(orthographic&&cameraBlend>0.999f){custom.ortho=true;custom.left=-span/2;custom.right=span/2;custom.top=span*height/width/2;custom.bottom=-custom.top;custom.nearPlane=5;}
         renderedFrustum=custom;haveRenderedFrustum=true;++projectionUpdates;
         originalSetupCamera(renderer,pos,dir,camUp,camRight,&custom,viewport);
+        auto device=at<IDirect3DDevice9*>(renderer,0x288);D3DVIEWPORT9 vp{};
+        if(dir&&camUp&&camRight&&device&&SUCCEEDED(device->GetViewport(&vp))){
+            renderCamera={*pos,*dir,*camUp,*camRight,custom,float(vp.X),float(vp.Y),float(vp.Width),float(vp.Height),true};
+        }
     }else originalSetupCamera(renderer,pos,dir,camUp,camRight,frustum,viewport);
 }
 void basis(){
@@ -150,10 +159,8 @@ void installHooks(){
 }
 bool pick(float x,float y,Vec& hit,void*& hitObject){
     if(!active()||!camera||cameraBlend<0.999f)return false;
-    float sx=2*x/width-1,sy=1-2*y/height;Vec origin=cameraPos,ray=forward;
-    auto f=haveRenderedFrustum?renderedFrustum:at<Frustum>(camera,0xDC);
-    if(f.ortho)origin=origin+right*((f.left+f.right)/2+sx*(f.right-f.left)/2)+up*((f.bottom+f.top)/2+sy*(f.top-f.bottom)/2);
-    else ray=normalized(forward+right*((f.left+f.right)/2+sx*(f.right-f.left)/2)+up*((f.bottom+f.top)/2+sy*(f.top-f.bottom)/2));
+    Vec origin{},ray{};
+    if(!displayCamera.ray(x,y,origin,ray))return false;
     return raycast(origin,ray,hit,hitObject);
 }
 void destination(float x,float y){
@@ -172,8 +179,9 @@ void destination(float x,float y){
             float rise=std::sqrt((gx.z-ground.z)*(gx.z-ground.z)+(gy.z-ground.z)*(gy.z-ground.z));
             if(rise>28){stop();note="Surface too steep to walk on";return;}
         }
-        hit=ground;
+        // Keep the original ray hit: replacing its Z with the probe shifts the click on slopes.
     }
+    float projectedX{},projectedY{};lastPickError=displayCamera.project(hit,projectedX,projectedY)?std::hypot(projectedX-x,projectedY-y):-1;
     stop();interactionId=pickedId;target=hit;markerUntil=GetTickCount64()+3000;moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=pos;
     void* inputState=global(0x11F35CC);heldForward=inputState?at<uint8_t>(inputState,0x1B94):-1;
     if(heldForward>=0&&heldForward<255)run("HoldKey "+std::to_string(heldForward));else {heldForward=-1;stop();note="Forward movement is not bound to a keyboard key";return;}
@@ -197,7 +205,7 @@ void walk(){
 }
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
-    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef;
+    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError;
     if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);
@@ -207,7 +215,7 @@ void poll(){
     const auto now=GetTickCount64();if(now-lastPoll<100)return;lastPoll=now;
     const std::string file=bridge+"/command.ini";
     auto seq=GetPrivateProfileIntA("command","sequence",0,file.c_str());if(seq&&seq!=lastSequence){
-        lastSequence=seq;desiredYaw=setting("yaw",desiredYaw);pitch=std::clamp(setting("pitch",pitch),20.f,80.f);distance=std::clamp(setting("distance",distance),200.f,4000.f);span=std::clamp(setting("span",span),300.f,5000.f);
+        lastSequence=seq;desiredYaw=setting("yaw",desiredYaw);desiredPitch=std::clamp(setting("pitch",desiredPitch),20.f,80.f);distance=std::clamp(setting("distance",distance),200.f,4000.f);span=std::clamp(setting("span",span),300.f,5000.f);
         orthographic=GetPrivateProfileIntA("camera","orthographic",orthographic,file.c_str())!=0;
         char op[40];GetPrivateProfileStringA("command","operation","configure",op,40,file.c_str());
         if(!strcmp(op,"enable")){requested=true;setEnabled(true);}else if(!strcmp(op,"disable")){requested=false;setEnabled(false);}
@@ -221,14 +229,15 @@ void poll(){
 }
 void input(){
     DWORD foreground{};GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
-    if(foreground!=GetCurrentProcessId()){stop();lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;return;}
+    if(foreground!=GetCurrentProcessId()){mouseDeltaX=0;mouseDeltaY=0;stop();lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;return;}
     bool f=(GetAsyncKeyState(VK_F8)&0x8000)!=0;if(f&&!lastF){requested=!enabled;setEnabled(requested);}lastF=f;
     bool l=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,r=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
     if(!active()){if(!pendingActivation)stop();lastL=l;lastR=r;lastMiddle=false;return;}
     void* in=global(0x11F35CC);if(in){
         bool middle=(GetAsyncKeyState(VK_MBUTTON)&0x8000)!=0;
-        if(middle){desiredYaw+=float(at<int>(in,0x1b24))*.35f;}
-        else {cursorX=std::clamp(cursorX+float(at<int>(in,0x1b24)),0.f,width-1);cursorY=std::clamp(cursorY+float(at<int>(in,0x1b28)),0.f,height-1);}
+        int dx=mouseDeltaX.exchange(0),dy=mouseDeltaY.exchange(0);
+        if(middle){desiredYaw+=float(dx)*.35f;desiredPitch=std::clamp(desiredPitch+float(dy)*.25f,20.f,80.f);}
+        else {cursorX=std::clamp(cursorX+float(dx),0.f,width-1);cursorY=std::clamp(cursorY+float(dy),0.f,height-1);}
         lastMiddle=middle;
         int wheel=wheelInput.take();if(wheel){distance=std::clamp(distance-wheel*.5f,200.f,4000.f);span=std::clamp(span-wheel*.5f,300.f,5000.f);}}
     if(GetAsyncKeyState(VK_OEM_4)&0x8000)desiredYaw-=100.f*frameDt;
@@ -259,30 +268,41 @@ void capture(IDirect3DDevice9* device){
     }else{lastError="Frame capture failed: disable multisample antialiasing for readback";}
     if(staging)staging->Release();if(resolved)resolved->Release();back->Release();
 }
-bool projectPoint(Vec point,float& x,float& y){
-    if(!haveRenderedFrustum)return false;
-    Vec relative=point-cameraPos;float z=dot(relative,forward);if(z<=5)return false;
-    auto f=renderedFrustum;float a=dot(relative,right),b=dot(relative,up);
-    if(!f.ortho){a/=z;b/=z;}
-    x=(a-f.left)/(f.right-f.left)*width;y=(f.top-b)/(f.top-f.bottom)*height;
-    return std::isfinite(x)&&std::isfinite(y)&&x>=0&&y>=0&&x<width&&y<height;
+// HUD colour is packed RRGGBBAA; D3D Clear uses AARRGGBB.
+DWORD hudColour(){return 0xff000000u|(*reinterpret_cast<uint32_t*>(0x11D8AD4+4)>>8);}
+void* tileValue(void* tile,uint32_t id){
+    if(!tile)return nullptr;auto values=at<void**>(tile,0x14);auto count=at<uint32_t>(tile,0x18);
+    if(!values||count>4096)return nullptr;
+    for(uint32_t i=0;i<count;i++)if(values[i]&&at<uint32_t>(values[i],0)==id)return values[i];return nullptr;
+}
+void updateReticle(bool hide){
+    static void* heldTile{};static float previousVisible{};
+    auto hud=global(0x11D96C0);auto tile=hud?at<void*>(hud,0xF4):nullptr;
+    if(heldTile&&heldTile!=tile)heldTile=nullptr;
+    if(hide&&tile){
+        if(!heldTile){auto value=tileValue(tile,0xFA3);if(!value)return;previousVisible=at<float>(value,8);heldTile=tile;}
+        reinterpret_cast<void(__thiscall*)(void*,uint32_t,float,bool)>(0xA012D0)(tile,0xFA3,0,true);
+    }else if(heldTile){reinterpret_cast<void(__thiscall*)(void*,uint32_t,float,bool)>(0xA012D0)(heldTile,0xFA3,previousVisible,true);heldTile=nullptr;}
 }
 void destinationMarker(IDirect3DDevice9* device){
     if(!moving&&GetTickCount64()>markerUntil)return;
-    std::array<D3DRECT,96> dots{};DWORD count=0;
-    for(int i=0;i<96;i++){
-        float a=float(i)*6.2831853f/96.f;float x{},y{};
-        if(!projectPoint(target+Vec{cosf(a)*23,sinf(a)*23,4},x,y))continue;
-        LONG px=LONG(x),py=LONG(y);dots[count++]={std::max(0L,px-1),std::max(0L,py-1),std::min(LONG(width),px+2),std::min(LONG(height),py+2)};
+    float centreX{},centreY{};if(!renderCamera.project(target,centreX,centreY))return;
+    std::array<D3DRECT,64> dots{};DWORD count=0;
+    for(int i=0;i<64;i++){
+        float a=float(i)*6.2831853f/64.f;
+        LONG px=LONG(std::lround(centreX+cosf(a)*10)),py=LONG(std::lround(centreY+sinf(a)*7));
+        if(px<1||py<1||px>=LONG(width)-2||py>=LONG(height)-2)continue;
+        dots[count++]={px-1,py-1,px+2,py+2};
     }
-    if(count)device->Clear(count,dots.data(),D3DCLEAR_TARGET,interactionId?0xffffc65c:0xff62efae,1,0);
+    if(count)device->Clear(count,dots.data(),D3DCLEAR_TARGET,hudColour(),1,0);
 }
 void present(){
     auto now=GetTickCount64();frameDt=lastFrameTick?std::clamp(float(now-lastFrameTick)/1000.f,0.f,.05f):.016f;lastFrameTick=now;
     bool gameplay=active();ownControls(gameplay);
-    if(!gameplay){wheelInput.reset();if(!pendingActivation)stop();}
+    if(!gameplay){mouseDeltaX=0;mouseDeltaY=0;displayCamera.valid=false;wheelInput.reset();if(!pendingActivation)stop();}
     float goal=gameplay?1.f:0.f,step=frameDt/0.45f;
     cameraBlend=goal>cameraBlend?std::min(goal,cameraBlend+step):std::max(goal,cameraBlend-step);
+    pitch+=(desiredPitch-pitch)*(1-std::exp(-12.f*frameDt));
     yaw+=std::remainder(desiredYaw-yaw,360.f)*(1-std::exp(-12.f*frameDt));
     if(!gameplay){lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;}
     ++frames;void* renderer=global(0x11F4748);if(!renderer)return;auto device=at<IDirect3DDevice9*>(renderer,0x288);if(!device)return;
@@ -290,15 +310,17 @@ void present(){
     if(active()){
         destinationMarker(device);
         // D3D9 Clear rects work outside BeginScene and do not alter shader state.
-        LONG x=LONG(cursorX),y=LONG(cursorY);D3DRECT rects[2]={{std::max(0L,x-7),std::max(0L,y-1),std::min(LONG(width),x+8),std::min(LONG(height),y+2)},{std::max(0L,x-1),std::max(0L,y-7),std::min(LONG(width),x+2),std::min(LONG(height),y+8)}};
-        device->Clear(2,rects,D3DCLEAR_TARGET,hoverRef?0xff62efae:0xffffce59,1,0);
+        LONG x=LONG(cursorX),y=LONG(cursorY);std::array<D3DRECT,13> arrow{};DWORD count=0;
+        for(LONG i=0;i<12;i++){LONG rightEdge=std::min(LONG(width),x+1+i/2),bottom=std::min(LONG(height),y+i+1);if(y+i>=LONG(height))break;arrow[count++]={x,y+i,rightEdge,bottom};}
+        if(count)device->Clear(count,arrow.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+        displayCamera=renderCamera;
     }
     if(captureRequested){captureRequested=false;capture(device);}
 }
 void saveSettings(){
     static std::string previous;static uint64_t lastSave{};
     auto now=GetTickCount64();if(now-lastSave<1000)return;lastSave=now;
-    std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<pitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\n";
+    std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<desiredPitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\n";
     if(text.str()==previous)return;
     {std::ofstream file(bridge+"/settings.tmp");file<<text.str();if(!file)return;}
     if(MoveFileExA((bridge+"/settings.tmp").c_str(),(bridge+"/settings.ini").c_str(),MOVEFILE_REPLACE_EXISTING))previous=text.str();
@@ -309,7 +331,7 @@ void loadSettings(){
         char value[64];GetPrivateProfileStringA("camera",key,"",value,64,file.c_str());char* end{};float n=strtof(value,&end);
         return end!=value&&std::isfinite(n)?std::clamp(n,low,high):fallback;
     };
-    desiredYaw=yaw=read("yaw",45,-360,360);pitch=read("pitch",50,20,80);
+    desiredYaw=yaw=read("yaw",45,-360,360);desiredPitch=pitch=read("pitch",50,20,80);
     distance=read("distance",1100,200,4000);span=read("span",1500,300,5000);
     orthographic=GetPrivateProfileIntA("camera","orthographic",1,file.c_str())!=0;
     autoEnable=GetPrivateProfileIntA("startup","auto_enable",1,file.c_str())!=0;requested=autoEnable;
@@ -335,13 +357,13 @@ void onMessage(Message* m){
             if(!autoReadySince)autoReadySince=now;
             if(now-autoReadySince>=750){setEnabled(true);autoReadySince=0;}
         }else autoReadySince=0;
-        poll();input();saveSettings();break;} // MainGameLoop
+        updateReticle(active());poll();input();saveSettings();break;} // MainGameLoop
     case 24:present();break; // OnFramePresent
     }
 }
 }
 extern "C" __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* api,PluginInfo* info){
-    info->infoVersion=1;info->name="MojaveIsoNative";info->version=4;
+    info->infoVersion=1;info->name="MojaveIsoNative";info->version=5;
     return !api->isEditor&&!api->isNogore&&api->runtimeVersion==0x040020D0;
 }
 extern "C" __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* api){
@@ -350,6 +372,6 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* api){
     lastSequence=GetPrivateProfileIntA("command","sequence",0,(bridge+"/command.ini").c_str());
     console=static_cast<Console*>(api->QueryInterface(1));scripts=static_cast<Scripts*>(api->QueryInterface(6));
     auto messages=static_cast<Messaging*>(api->QueryInterface(2));
-    if(!console||!scripts||!messages)return false;log("MojaveIsoNative 0.4 starting, native ABI 1.4.0.525");
+    if(!console||!scripts||!messages)return false;log("MojaveIsoNative 0.5 starting, native ABI 1.4.0.525");
     return messages->RegisterListener(api->GetPluginHandle(),"NVSE",onMessage);
 }
