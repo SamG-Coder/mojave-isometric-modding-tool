@@ -44,4 +44,23 @@ inline bool raycast(Vec origin,Vec direction,Vec& hit,void*& object){
     if(!std::isfinite(fraction)||fraction<0||fraction>=0.99999f)return false;
     hit=origin+direction*(distance*fraction);return true;
 }
+inline float dot(Vec a,Vec b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+inline Vec cross(Vec a,Vec b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
+inline bool dialogue(){return reinterpret_cast<bool*>(0x11F308F)[1009];}
+// Resolve collision geometry through BSFadeNode to its owning reference (JIP adapter).
+inline void* parentReference(void* node){
+    for(int i=0;node&&i<128;++i,node=at<void*>(node,0x18))
+        if(at<uintptr_t>(node,0)==0x10A8F90){auto ref=at<void*>(node,0xCC);if(ref)return ref;}
+    return nullptr;
+}
+inline void* reference(uint32_t id){return id?reinterpret_cast<void*(__stdcall*)(uint32_t)>(0x4F9620)(id):nullptr;}
+inline bool interactable(void* ref){
+    if(!ref||ref==player())return false;
+    auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
+    auto base=at<void*>(ref,0x20);if(!base)return false;
+    auto kind=at<uint8_t>(base,4);
+    return kind==0x1C||kind==0x1B||kind==0x2A||kind==0x2B||kind==0x15||kind==0x16||kind==0x17;
+}
+inline bool activate(void* ref){return reinterpret_cast<bool(__thiscall*)(void*,void*,uint32_t,uint32_t,uint32_t)>(0x573170)(ref,player(),0,0,1);}
+
 }

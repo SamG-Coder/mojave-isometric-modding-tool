@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MojaveIsoNative VERSION 0.1.0 LANGUAGES CXX)
+project(MojaveIsoNative VERSION 0.4.0 LANGUAGES CXX)
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
   message(FATAL_ERROR "Fallout New Vegas requires a Windows Win32 (x86) build.")
 endif()
@@ -9,3 +9,12 @@ target_compile_definitions(MojaveIsoNative PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX 
 target_compile_options(MojaveIsoNative PRIVATE /W4 /EHsc)
 target_link_libraries(MojaveIsoNative PRIVATE d3d9 user32)
 set_target_properties(MojaveIsoNative PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(MojaveIsoLaunch WIN32 src/launcher.cpp)
+target_compile_features(MojaveIsoLaunch PRIVATE cxx_std_20)
+target_compile_definitions(MojaveIsoLaunch PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(MojaveIsoLaunch PRIVATE user32)
+set_target_properties(MojaveIsoLaunch PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(MojaveIsoWheelTests tests/wheel_input_tests.cpp)
+target_compile_features(MojaveIsoWheelTests PRIVATE cxx_std_20)
