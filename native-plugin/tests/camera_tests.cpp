@@ -40,5 +40,11 @@ int main(){
     }
     CameraSample c;c.valid=true;c.direction={0,1,0};c.up={0,0,1};c.right={1,0,0};c.frustum={-100,100,100,-100,1,1000,true,{}};c.width=c.height=200;
     Vec o,d;c.ray(150,50,o,d);check(o.x==50&&o.z==50&&d.y==1,"Screen axes must be right and up");
+    Vec start{10,20,1000},dir=normalized(Vec{.3f,.2f,-1});
+    Vec clipped=rayBelowHeight(start,dir,100);
+    check(std::abs(clipped.z-100)<.001f,"Roof clipping failed to move below ceiling");
+    check(length(cross(clipped-start,dir))<.001f,"Roof clipping changed the screen ray");
+    check(rayBelowHeight(Vec{0,0,50},dir,100).z==50,"Already below roof ray moved");
+    check(rayBelowHeight(start,Vec{1,0,0},100).z==1000,"Horizontal ray produced invalid clipping");
     std::cout<<tests<<" camera round trips passed across pitch, yaw, projection and viewport offsets.\n";
 }

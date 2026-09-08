@@ -35,6 +35,11 @@ inline bool intersects(const CullingPlanes& planes,Vec centre,float radius){
     }
     return true;
 }
+inline Vec rayBelowHeight(Vec origin,Vec direction,float ceiling){
+    if(direction.z<-.001f&&origin.z>ceiling)
+        return origin+direction*((ceiling-origin.z)/direction.z);
+    return origin;
+}
 struct CameraSample {
     Vec position{},direction{},up{},right{};Frustum frustum{};
     float x{},y{},width{},height{};bool valid{};

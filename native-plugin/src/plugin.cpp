@@ -18,7 +18,7 @@
 #include "cutaway.hpp"
 using namespace engine;
 namespace {
-navigation::Search route;size_t waypoint{};uint64_t routeStarted{};
+navigation::Search route;size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};
 struct NearbyAction{uint32_t id;Vec pos;std::string text;float range;};std::vector<NearbyAction> nearby;
 struct ActionBox{uint32_t id;float x,y,w,h;};std::vector<ActionBox> actionBoxes;
 struct MapCell{Vec p;int state=0;};std::array<MapCell,1024> mapCells{};Vec mapOrigin{};size_t mapIndex{};bool mapReady{};
@@ -241,11 +241,20 @@ bool pick(float x,float y,Vec& hit,void*& hitObject){
     if(!active()||!camera||cameraBlend<0.999f)return false;
     Vec origin{},ray{};
     if(!displayCamera.ray(x,y,origin,ray))return false;
+    auto cell=at<void*>(player(),0x40);
+    // Interior destination selection uses the player's current floor. Clip the
+    // same screen ray below roofs, rather than changing its screen alignment.
+    // Exterior roofs are ignored only when a ceiling is detected above the player.
+    Vec feet=at<Vec>(player(),0x30),ceiling{};void* ceilingObject{};
+    bool indoors=cell&&(at<uint8_t>(cell,0x24)&1);
+    bool covered=indoors;
+    if(!covered)covered=raycast(feet+Vec{0,0,110},{0,0,1},ceiling,ceilingObject)&&ceiling.z-feet.z<600;
+    if(covered)origin=rayBelowHeight(origin,ray,feet.z+100);
     return raycast(origin,ray,hit,hitObject);
 }
 bool groundProbe(Vec guess,Vec& ground){
-    void* object{};if(!raycast(guess+Vec{0,0,64},{0,0,-1},ground,object))return false;
-    if(std::abs(ground.z-guess.z)>90)return false;
+    void* object{};if(!raycast(guess+Vec{0,0,44},{0,0,-1},ground,object))return false;
+    if(std::abs(ground.z-guess.z)>64)return false;
     Vec ceiling{};if(raycast(ground+Vec{0,0,5},{0,0,1},ceiling,object)&&ceiling.z-ground.z<110)return false;
     return true;
 }
@@ -253,6 +262,8 @@ bool corridorClear(Vec a,Vec b){
     Vec delta=b-a;float len=length(delta);if(len<1)return true;
     if(std::abs(delta.z)>std::hypot(delta.x,delta.y)*.8f+18)return false;
     Vec side=normalized(Vec{-delta.y,delta.x,0})*19;
+    // Ensure longer segments are supported: body rays alone can cross gaps.
+    if(len>40)for(float t=32;t<len;t+=32){Vec floor{};if(!groundProbe(a+delta*(t/len),floor)||std::abs(floor.z-(a+delta*(t/len)).z)>40)return false;}
     for(int lane=-1;lane<=1;lane++)for(float bodyHeight:{28.f,95.f}){
         Vec origin=a+side*float(lane)+Vec{0,0,bodyHeight},hit{};void* object{};
         if(raycast(origin,delta*(1/len),hit,object)&&length(hit-origin)<len-3)return false;
@@ -265,6 +276,7 @@ void planDestination(Vec hit,uint32_t id){
 }
 void nearbyDestination(uint32_t id){auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
 void beginWalking(){
+    lastPlanningMs=GetTickCount64()-routeStarted;
     moving=true;moveStarted=lastProgress=GetTickCount64();lastPos=at<Vec>(player(),0x30);waypoint=route.path.size()>1?1:0;
     auto inputState=global(0x11F35CC);heldForward=inputState?at<uint8_t>(inputState,0x1B94):-1;
     if(heldForward>=0&&heldForward<255)run("HoldKey "+std::to_string(heldForward));else {heldForward=-1;stop();note="Bind forward movement to a keyboard key";return;}
@@ -294,7 +306,7 @@ void destination(float x,float y){
 void walk(){
     if(route.state==navigation::Search::State::Searching){
         if(!active()){stop();return;}
-        route.step(groundProbe,corridorClear,4);
+        route.step(groundProbe,corridorClear,12,2.f);
         if(route.state==navigation::Search::State::Found)beginWalking();
         else if(route.state==navigation::Search::State::NoPath||GetTickCount64()-routeStarted>12000){stop();note="No reachable route found";}
     }
@@ -310,15 +322,20 @@ void walk(){
     }
     auto now=GetTickCount64();if(length(pos-lastPos)>12){lastPos=pos;lastProgress=now;}
     if(now-lastProgress>1800||now-moveStarted>30000){stop();note="Movement stopped: blocked or timed out";return;}
-    while(waypoint+1<route.path.size()&&length(route.path[waypoint]-pos)<30)++waypoint;
+    while(waypoint+1<route.path.size()&&length(route.path[waypoint]-pos)<12)++waypoint;
     if(waypoint<route.path.size())delta=route.path[waypoint]-pos;
-    if(!corridorClear(pos,pos+normalized(delta)*std::min(35.f,length(delta)))){stop();note="Route blocked by a new obstacle";return;}
+    static uint64_t lastCorridorCheck{};
+    if(now-lastCorridorCheck>=100){lastCorridorCheck=now;
+        if(!corridorClear(pos,pos+normalized(delta)*std::min(35.f,length(delta)))){
+            auto goal=target;auto id=interactionId;planDestination(goal,id);note="Replanning around changed obstacle";return;
+        }
+    }
     at<float>(player(),0x2c)=atan2f(delta.x,delta.y);
     movement(1|512);
 }
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
-    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<route.path.size()<<",\"expanded_nodes\":"<<route.expanded<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
+    s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<route.path.size()<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);

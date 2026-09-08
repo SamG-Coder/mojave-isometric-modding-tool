@@ -61,3 +61,19 @@ Renderer submission, the camera frustum and the culling adapter now use one worl
 This supersedes the disabled hand-built plane override. The cutaway geometry hooks remain disabled. Release build and 1,176 camera round trips pass, with added partial-sphere intersection, tangent, fully-outside and camera-volume corner cases. These mathematical tests do not prove live visibility. DLL staged for the next launcher start; saloon foreground-object visual regression and performance assessment pending. Excluding compound occlusion can increase draw calls, particularly indoors.
 
 User playtest confirmation: the world-transform culling correction fixes the reported foreground-object disappearance. Confirmed in conversation after installing the staged build.
+
+
+## Indoor pathfinding and roof picking follow-up
+
+Searches now cache successful and failed floor samples and directional connections, discard caches for each new route, distinguish floor-height layers, and use a 32-unit grid. Each update yields between expansions after a 2 ms budget or 12 expansions (an individual expansion can exceed 2 ms). Walking obstacle probes are limited to ten per second; newly blocked routes trigger replanning. Long connections check supporting floor; arrival on another floor is rejected for ground destinations.
+
+Interior/covered-player screen rays begin at player-floor height +100 while retaining their original line, to avoid selecting overhead roof geometry. This deliberately prioritizes the current floor; selecting upper floors remotely is not supported by this policy. It does not hide roofs visually.
+
+Tests pass for a narrow doorway, cache reuse/reset, blocked routes, height changes, roof-ray alignment, projection round trips and input ownership. Synthetic doorway case: 13 expansions, 134 collision callbacks, 233 reused results. The live build entered the saloon and reported interior route queries/cache hits and negligible pick reprojection error. This is not an FPS benchmark or exhaustive indoor-layout validation. The final different-floor arrival correction is staged for next launch.
+
+
+## Click-to-walk latency follow-up
+
+A budgeted direct-corridor phase now precedes A*. It samples floor support and body clearance in 32-unit segments, falls back to A* on obstruction, and never starts unvalidated movement. A* equal-score ties prefer the candidate with less remaining distance. Status now reports planning_ms (the last completed search duration) and direct_route.
+
+Tests: an unobstructed 256-unit route completes in one 12-segment update with zero A* expansions; obstacle detours, floor gaps, doorway clearance, cancellation and height tests pass. Doorway case uses 12 expansions, 121 collision callbacks and 220 cache hits. These are synthetic checks, not measured live click-to-walk latency. The updated DLL is staged for next launch.
