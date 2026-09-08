@@ -1,0 +1,13 @@
+/build/
+/build-native/
+/runtime/
+/backups/
+__pycache__/
+*.user
+
+.venv/
+*.local.cmd
+*.local.md
+/INSTALL-MANIFEST.json
+/native-plugin/prebuilt/
+*.pyc
