@@ -75,3 +75,15 @@ After building and installing, the installer also copies MojaveIsoLaunch.exe to 
 ```
 
 Steam Play then launches xNVSE directly. The desktop tool is optional. Settings persist in runtime/settings.ini. The launcher installs a staged runtime/MojaveIsoNative.pending.dll before starting the game; a running game must be restarted to load an updated plugin. Clear the Steam launch option to restore the original launcher.
+
+## In-game settings
+
+Open the normal Settings menu from the title screen or the Esc pause menu. Display retains its native live controls (brightness, colours, texture size and fade distances) and adds graphics adapter, resolution, anti-aliasing, anisotropic filtering, fullscreen/windowed mode, VSync, shadows, HDR, depth of field and water options to the same scrolling list. Added graphics settings marked `*` require a restart. Use **Apply display changes (restart required)** at the bottom to queue them; **Cancel unapplied changes** discards edits since the last Apply. Back without Apply also discards the new options when the page is reopened. The existing game's settings keep their normal behavior.
+
+The **Isometric** category is another native Settings entry. It exposes projection, zoom span, pitch, middle-mouse rotation speed, Alt aim line, damage numbers, automatic distant aiming and automatic activation after loading. Use Apply to update these immediately and persist them.
+
+The menu uses the game's native list and toggle templates, including its arrows, scrolling, fonts and interface colours. It does not require an overlay menu or replacement menu XML. The options column is widened to accommodate longer graphics values.
+
+Steam Play through MojaveIsoLaunch applies queued display settings before xNVSE starts. Only recognized preference fields are copied into FalloutPrefs.ini. The launcher backs up the original under `backups/Display-*.ini`, preserves unrelated preferences, and keeps pending changes if applying them fails. The menu validates fullscreen resolutions and MSAA support against the selected Direct3D adapter before saving.
+
+Screen picking and indicators use final back-buffer pixels, with explicit mapping from the world-render viewport. Mouse pointer speed and indicator sizes scale with output height; middle-mouse camera rotation keeps its angular sensitivity. Native interaction labels and their click areas share the UI coordinate conversion. Diagnostics now include `world_surface`, `world_viewport` and `display_viewport` for resolution-related reports.

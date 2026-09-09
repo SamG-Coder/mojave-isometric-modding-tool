@@ -13,6 +13,8 @@
 #include <iomanip>
 #include "damage_numbers.hpp"
 #include <map>
+#include <type_traits>
+#include "display_settings.hpp"
 #include "nvse_abi.hpp"
 #include "engine.hpp"
 #include "wheel_input.hpp"
@@ -38,9 +40,11 @@ struct MapCell{Vec p;int state=0;};std::array<MapCell,1024> mapCells{};Vec mapOr
 struct Cover{uint32_t id;void* node;};std::vector<Cover> occludingCover;
 overlay::Painter hudPainter,fadePainter;float fadeAlpha{};uint64_t fadeHoldUntil{};bool pendingDisable{};
 WheelInput wheelInput;std::atomic<int> mouseDeltaX{},mouseDeltaY{};
-CameraSample renderCamera{},displayCamera{};float lastPickError=-1;
+CameraSample renderCamera{},displayCamera{},overlayCamera{};float renderTargetWidth{},renderTargetHeight{};float lastPickError=-1;
 std::string root, bridge; Console* console{}; Scripts* scripts{};
 bool enabled{},requested{},hooksReady{},moving{},captureRequested{},lastL{},lastF{},lastR{};
+float rotationSpeed=.35f;bool showAimLine=true,showDamageNumbers=true,automaticADS=true;
+void saveSettings(bool force=false);void installSettingsMenu();
 bool autoEnable=true; uint64_t autoReadySince{};
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
 uint32_t interactionId{},hoverRef{};uint64_t markerUntil{},activationStarted{},lastFrameTick{};
@@ -184,6 +188,9 @@ void __fastcall setupCameraHook(void* renderer,void*,Vec* pos,Vec* dir,Vec* camU
         auto device=at<IDirect3DDevice9*>(renderer,0x288);D3DVIEWPORT9 vp{};
         if(dir&&camUp&&camRight&&device&&SUCCEEDED(device->GetViewport(&vp))){
             renderCamera={*pos,*dir,*camUp,*camRight,custom,float(vp.X),float(vp.Y),float(vp.Width),float(vp.Height),true};
+            IDirect3DSurface9* targetSurface{};D3DSURFACE_DESC targetDesc{};
+            renderTargetWidth=renderTargetHeight=0;
+            if(SUCCEEDED(device->GetRenderTarget(0,&targetSurface))){if(SUCCEEDED(targetSurface->GetDesc(&targetDesc))){renderTargetWidth=float(targetDesc.Width);renderTargetHeight=float(targetDesc.Height);}targetSurface->Release();}
         }
     }else originalSetupCamera(renderer,pos,dir,camUp,camRight,frustum,viewport);
 }
@@ -300,7 +307,7 @@ HRESULT WINAPI drawIndexedHook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,IN
     cutaway::Mask mask;bool applied=false;
     // Screen-space projection is taken from this render pass, never last frame.
     if(drawingCover&&renderCamera.valid&&player()&&length(renderCamera.position-cameraPos)<1){
-        float x{},y{};if(renderCamera.project(at<Vec>(player(),0x30)+Vec{0,0,65},x,y))applied=mask.begin(device,x,y,std::clamp(height*.15f,70.f,160.f));
+        float x{},y{};if(renderCamera.project(at<Vec>(player(),0x30)+Vec{0,0,65},x,y))applied=mask.begin(device,x,y,std::clamp(renderCamera.height*.15f,70.f*renderCamera.height/720.f,160.f*renderCamera.height/720.f));
     }
     HRESULT hr=originalDrawIndexed(device,type,base,min,vertices,start,count);
     if(applied){++cutawayDraws;mask.end();}return hr;
@@ -328,6 +335,7 @@ template<int Index> void __fastcall healthDamageHook(void* actor,void*,void* sou
     damageNumbers.push_back({point,loss,GetTickCount64(),id});++damageNumberCount;
 }
 void installHooks(){
+    installSettingsMenu();
     void* prior{};
     if(replaceSlot(0x1086A6C+0x4B8,reinterpret_cast<void*>(healthDamageHook<0>),prior))originalHealthDamage[0]=reinterpret_cast<HealthDamage>(prior);
     if(replaceSlot(0x10870AC+0x4B8,reinterpret_cast<void*>(healthDamageHook<1>),prior))originalHealthDamage[1]=reinterpret_cast<HealthDamage>(prior);
@@ -602,7 +610,7 @@ void combatTick(){
             auto ref=parentReference(object);Vec point=combatActor(ref)?bodyPoint(ref):hit;facePoint(point);
             auto process=at<void*>(player(),0x68);auto entry=process&&at<uint8_t>(process,0x28)<=1?at<void*>(process,0x114):nullptr;
             auto weapon=entry?at<void*>(entry,8):nullptr;
-            wantSights=combat::useAimDownSights(length(point-firingOrigin()),!weapon||at<uint8_t>(weapon,0xF4)<=2,attack.sights);
+            wantSights=automaticADS&&combat::useAimDownSights(length(point-firingOrigin()),!weapon||at<uint8_t>(weapon,0xF4)<=2,attack.sights);
         }}
         else if(aimOwned){at<float>(player(),0x24)=priorAimPitch;aimOwned=false;}
         setSights(wantSights);
@@ -652,7 +660,7 @@ void combatTick(){
         return;
     }
     stopMovement();facePoint(attack.point);
-    bool wasAiming=attack.sights;setSights(combat::useAimDownSights(targetDistance,melee,attack.sights));
+    bool wasAiming=attack.sights;setSights(automaticADS&&combat::useAimDownSights(targetDistance,melee,attack.sights));
     if(attack.sights&&!wasAiming){attack.aimReadyAt=0;releaseAttack();note="Aiming at distant target";return;}
     if(!ownedControls[0]){releaseAttack();note="Attack input owned by another control system";return;}
     if(!process)return;
@@ -693,6 +701,7 @@ void combatTick(){
 }
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
+    s<<",\"world_surface\":["<<renderTargetWidth<<","<<renderTargetHeight<<"],\"world_viewport\":["<<renderCamera.x<<","<<renderCamera.y<<","<<renderCamera.width<<","<<renderCamera.height<<"],\"display_viewport\":["<<displayCamera.x<<","<<displayCamera.y<<","<<displayCamera.width<<","<<displayCamera.height<<"]";
     s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"planner_cpu_ms\":"<<plannerCpuMs<<",\"planner_step_ms\":"<<lastPlannerStepMs<<",\"planner_updates\":"<<plannerSteps<<",\"navigation_source\":\""<<navigationSource<<"\",\"native_triangles\":"<<nativeTriangles<<",\"native_expanded\":"<<nativeExpanded<<",\"native_planning_ms\":"<<nativePlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"aim_down_sights_requested\":"<<(attack.sights?"true":"false")<<",\"aim_down_sights_active\":"<<(nativeAiming()?"true":"false")<<",\"pipboy_mode\":"<<pipboyMode()<<",\"seated\":"<<(seated()?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){s<<",\"third_person_body\":"<<(at<uint8_t>(player(),0x64C)?"true":"false");auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;
@@ -729,8 +738,8 @@ void input(){
     void* in=global(0x11F35CC);if(in){
         bool middle=(GetAsyncKeyState(VK_MBUTTON)&0x8000)!=0;
         int dx=mouseDeltaX.exchange(0),dy=mouseDeltaY.exchange(0);
-        if(middle){desiredYaw+=float(dx)*.35f;desiredPitch=std::clamp(desiredPitch+float(dy)*.25f,20.f,80.f);}
-        else {cursorX=std::clamp(cursorX+float(dx),0.f,width-1);cursorY=std::clamp(cursorY+float(dy),0.f,height-1);}
+        if(middle){desiredYaw+=float(dx)*rotationSpeed;desiredPitch=std::clamp(desiredPitch+float(dy)*(.25f*rotationSpeed/.35f),20.f,80.f);}
+        else {cursorX=std::clamp(cursorX+float(dx)*(height/720.f),0.f,width-1);cursorY=std::clamp(cursorY+float(dy)*(height/720.f),0.f,height-1);}
         lastMiddle=middle;
         int wheel=wheelInput.take();if(wheel){distance=std::clamp(distance-wheel*.5f,200.f,4000.f);span=std::clamp(span-wheel*.5f,300.f,5000.f);}}
     if(GetAsyncKeyState(VK_OEM_4)&0x8000)desiredYaw-=100.f*frameDt;
@@ -771,6 +780,17 @@ void* tileValue(void* tile,uint32_t id){
     if(!values||count>4096)return nullptr;
     for(uint32_t i=0;i<count;i++)if(values[i]&&at<uint32_t>(values[i],0)==id)return values[i];return nullptr;
 }
+ScreenPoint nativeUIExtent(void* tile){
+    ScreenPoint size{};
+    for(int i=0;tile&&i<16;++i,tile=at<void*>(tile,0x28)){
+        if(size.x<=0){auto v=tileValue(tile,0xFB1);if(v)size.x=at<float>(v,8);}
+        if(size.y<=0){auto v=tileValue(tile,0xFB0);if(v)size.y=at<float>(v,8);}
+        if(size.x>0&&size.y>0)return size;
+    }
+    // The render dimensions are a last resort, never a fixed-resolution UI.
+    return {width,height};
+}
+#include "settings_menu.hpp"
 void updateDamageNumbers(){
     static void* owner{};static std::array<void*,24> labels{};
     auto hud=global(0x11D96C0);auto rootTile=hud?at<void*>(hud,4):nullptr;
@@ -781,9 +801,9 @@ void updateDamageNumbers(){
     {std::lock_guard<std::mutex> lock(damageMutex);
      if(!enabled)damageNumbers.clear();
      std::erase_if(damageNumbers,[&](auto& n){return now-n.started>=1400;});visible=damageNumbers;}
-    float uw=get(rootTile,0xFB1,1280),uh=get(rootTile,0xFB0,720);auto nativeText=at<void*>(hud,0xA8);
+    auto ui=nativeUIExtent(rootTile);float uw=ui.x,uh=ui.y;auto nativeText=at<void*>(hud,0xA8);
     for(size_t i=0;i<labels.size();i++){
-        bool show=active()&&renderCamera.valid&&i<visible.size();
+        bool show=showDamageNumbers&&active()&&displayCamera.valid&&i<visible.size();
         if(show&&!labels[i]){labels[i]=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,"menus\\MojaveIso\\damage.xml");log(labels[i]?"Damage popup tile created":"Damage popup tile failed to load");}
         auto label=labels[i];if(!label)continue;set(label,0xFA3,0);if(!show)continue;
         auto n=visible[i];float age=float(now-n.started)/1000.f,x{},y{};
@@ -792,7 +812,7 @@ void updateDamageNumbers(){
             auto feet=at<Vec>(ref,0x30);anchor=feet+Vec{0,0,105};
             if(auto head=namedBone(actorRoot(ref),"Bip01 Head")){auto p=at<Vec>(head,0x8C);if(validActorPoint(p,feet))anchor=p+Vec{0,0,24};}
         }}
-        if(!renderCamera.project(anchor,x,y))continue;y-=18+age*32;
+        if(!displayCamera.project(anchor,x,y))continue;y-=(18+age*32)*height/720.f;
         if(x<0||y<0||x>=width||y>=height)continue;
         std::ostringstream value;value<<std::fixed<<std::setprecision(n.amount<10?1:0)<<n.amount;
         auto text=tileValue(label,0xFC4);if(text)reinterpret_cast<void(__thiscall*)(void*,const char*,bool)>(0xA0A300)(text,value.str().c_str(),true);
@@ -812,13 +832,14 @@ void updateReticle(bool hide){
 }
 void destinationMarker(IDirect3DDevice9* device){
     if(!moving&&route.state!=navigation::Search::State::Searching&&GetTickCount64()>markerUntil)return;
-    float centreX{},centreY{};if(!renderCamera.project(target,centreX,centreY))return;
+    float centreX{},centreY{};if(!overlayCamera.project(target,centreX,centreY))return;
+    float scale=height/720.f;LONG stroke=std::max(1L,LONG(std::lround(scale)));
     std::array<D3DRECT,64> dots{};DWORD count=0;
     for(int i=0;i<64;i++){
         float a=float(i)*6.2831853f/64.f;
-        LONG px=LONG(std::lround(centreX+cosf(a)*10)),py=LONG(std::lround(centreY+sinf(a)*7));
+        LONG px=LONG(std::lround(centreX+cosf(a)*10*scale)),py=LONG(std::lround(centreY+sinf(a)*7*scale));
         if(px<1||py<1||px>=LONG(width)-2||py>=LONG(height)-2)continue;
-        dots[count++]={px-1,py-1,px+2,py+2};
+        dots[count++]={std::max(0L,px-stroke),std::max(0L,py-stroke),std::min(LONG(width),px+stroke+1),std::min(LONG(height),py+stroke+1)};
     }
     if(count)device->Clear(count,dots.data(),D3DCLEAR_TARGET,hudColour(),1,0);
 }
@@ -869,28 +890,31 @@ void nativeInteraction(){
     if(length(delta)>350||std::abs(delta.z)>150)return;
     float x{},y{};if(!displayCamera.project(p+Vec{0,0,65},x,y))return;
     auto get=[&](void* tile,uint32_t id,float fallback){auto value=tileValue(tile,id);return value?at<float>(value,8):fallback;};
-    float uiWidth=get(rootTile,0xFB1,1280),uiHeight=get(rootTile,0xFB0,720);
+    auto ui=nativeUIExtent(rootTile);float uiWidth=ui.x,uiHeight=ui.y;
     if(uiWidth<=0||uiHeight<=0)return;
     auto nativeText=at<void*>(hud,0xA8);
     for(uint32_t id:{0xFB9u,0xFB2u,0xFB3u,0xFB4u})set(id,get(nativeText,id,id==0xFB9?3.f:255.f));
     auto text=actionName(ref);auto stringValue=tileValue(label,0xFC4);
     if(stringValue)reinterpret_cast<void(__thiscall*)(void*,const char*,bool)>(0xA0A300)(stringValue,text.c_str(),true);
     // Place one native-font prompt beside the hovered object, above HUD meters.
-    x=std::clamp(x+12,8.f,std::max(8.f,width-230));y=std::clamp(y-24,8.f,std::max(8.f,height-110));
-    set(0xFA1,x*uiWidth/width);set(0xFA2,y*uiHeight/height);set(0xFA3,1);
-    actionBoxes.push_back({hoverRef,x,y,220,30});
+    UITransform transform{width,height,uiWidth,uiHeight};auto position=transform.toUI({x,y});
+    float promptWidth=get(label,0xFBA,300),promptHeight=std::max(30.f,get(label,0xFB0,30));
+    position.x=std::clamp(position.x+12,8.f,std::max(8.f,uiWidth-promptWidth-8));position.y=std::clamp(position.y-24,8.f,std::max(8.f,uiHeight-promptHeight-80));
+    set(0xFA1,position.x);set(0xFA2,position.y);set(0xFA3,1);
+    auto pixel=transform.toPixels(position),extent=transform.toPixels({promptWidth,promptHeight});
+    actionBoxes.push_back({hoverRef,pixel.x,pixel.y,extent.x,extent.y});
 }
 void drawWorldUI(IDirect3DDevice9* device){
-    if(active()&&altAiming&&!lastMiddle&&aimLine.valid&&GetTickCount64()-lastAimUpdate<=150){
-        float x{},y{},ex{},ey{};
-        if(renderCamera.project(aimLine.origin,x,y)&&renderCamera.project(aimLine.end,ex,ey)&&hudPainter.begin(device)){
+    if(showAimLine&&active()&&altAiming&&!lastMiddle&&aimLine.valid&&GetTickCount64()-lastAimUpdate<=150){
+        float x{},y{},ex{},ey{},scale=height/720.f;
+        if(overlayCamera.project(aimLine.origin,x,y)&&overlayCamera.project(aimLine.end,ex,ey)&&hudPainter.begin(device)){
             DWORD colour=(hudColour()&0x00ffffffu)|0xdd000000u;
-            hudPainter.line(x,y,ex,ey,colour);
+            hudPainter.line(x,y,ex,ey,colour,1.5f*scale);
             DWORD impact=aimLine.blocked?0xffff6655u:colour;
-            hudPainter.line(ex-4,ey,ex+4,ey,impact);hudPainter.line(ex,ey-4,ex,ey+4,impact);
-            float tx{},ty{};if(aimLine.blocked&&renderCamera.project(aimLine.target,tx,ty)){
+            hudPainter.line(ex-4*scale,ey,ex+4*scale,ey,impact,1.5f*scale);hudPainter.line(ex,ey-4*scale,ex,ey+4*scale,impact,1.5f*scale);
+            float tx{},ty{};if(aimLine.blocked&&overlayCamera.project(aimLine.target,tx,ty)){
                 DWORD faint=(hudColour()&0x00ffffffu)|0x70000000u;
-                hudPainter.line(tx-3,ty-3,tx+3,ty+3,faint);hudPainter.line(tx-3,ty+3,tx+3,ty-3,faint);
+                hudPainter.line(tx-3*scale,ty-3*scale,tx+3*scale,ty+3*scale,faint,1.5f*scale);hudPainter.line(tx-3*scale,ty+3*scale,tx+3*scale,ty-3*scale,faint,1.5f*scale);
             }
             hudPainter.finish();
         }
@@ -911,31 +935,36 @@ void present(){
     if(!gameplay){lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;}
     ++frames;void* renderer=global(0x11F4748);if(!renderer)return;auto device=at<IDirect3DDevice9*>(renderer,0x288);if(!device)return;
     // Cutaway remains disabled pending visibility regression diagnosis.
-    D3DVIEWPORT9 vp{};if(SUCCEEDED(device->GetViewport(&vp))){width=float(vp.Width);height=float(vp.Height);}
+    overlay::PresentationSurface surface(device);if(!surface)return;
+    float nextWidth=float(surface.desc.Width),nextHeight=float(surface.desc.Height);
+    if(width!=nextWidth||height!=nextHeight){auto c=resizeCursor({cursorX,cursorY},width,height,nextWidth,nextHeight);cursorX=c.x;cursorY=c.y;actionBoxes.clear();}
+    width=nextWidth;height=nextHeight;
+    overlayCamera=presentationCamera(renderCamera,renderTargetWidth,renderTargetHeight,width,height);
     if(active()){
         destinationMarker(device);
-        if(attack.ordered&&attack.id){float sx{},sy{};if(renderCamera.project(attack.point,sx,sy)){
+        float scale=height/720.f;LONG stroke=std::max(1L,LONG(std::lround(scale)));
+        if(attack.ordered&&attack.id){float sx{},sy{};if(overlayCamera.project(attack.point,sx,sy)){
             std::array<D3DRECT,24> marks{};DWORD count=0;
-            for(int i=0;i<24;i++){float a=i*6.2831853f/24;LONG x=LONG(sx+std::cos(a)*16),y=LONG(sy+std::sin(a)*16);
-                if(x>=1&&y>=1&&x<LONG(width)-2&&y<LONG(height)-2)marks[count++]={x-1,y-1,x+2,y+2};}
+            for(int i=0;i<24;i++){float a=i*6.2831853f/24;LONG x=LONG(sx+std::cos(a)*16*scale),y=LONG(sy+std::sin(a)*16*scale);
+                if(x>=1&&y>=1&&x<LONG(width)-2&&y<LONG(height)-2)marks[count++]={std::max(0L,x-stroke),std::max(0L,y-stroke),std::min(LONG(width),x+stroke+1),std::min(LONG(height),y+stroke+1)};}
             if(count)device->Clear(count,marks.data(),D3DCLEAR_TARGET,hudColour(),1,0);
         }}
         // D3D9 Clear rects work outside BeginScene and do not alter shader state.
-        LONG x=LONG(cursorX),y=LONG(cursorY);std::array<D3DRECT,13> arrow{};DWORD count=0;
-        for(LONG i=0;i<12;i++){LONG rightEdge=std::min(LONG(width),x+1+i/2),bottom=std::min(LONG(height),y+i+1);if(y+i>=LONG(height))break;arrow[count++]={x,y+i,rightEdge,bottom};}
-        if(altAiming){
-            std::array<D3DRECT,4> reticle{{{x-10,y-1,x-3,y+2},{x+4,y-1,x+11,y+2},{x-1,y-10,x+2,y-3},{x-1,y+4,x+2,y+11}}};
-            for(auto rect:reticle){rect.x1=std::max(0L,rect.x1);rect.y1=std::max(0L,rect.y1);rect.x2=std::min(LONG(width),rect.x2);rect.y2=std::min(LONG(height),rect.y2);if(rect.x2>rect.x1&&rect.y2>rect.y1)device->Clear(1,&rect,D3DCLEAR_TARGET,hudColour(),1,0);}
-        }else if(count)device->Clear(count,arrow.data(),D3DCLEAR_TARGET,hudColour(),1,0);
-        displayCamera=renderCamera;
+        auto rect=[&](float l,float t,float r,float b){return D3DRECT{std::clamp(LONG(cursorX+l*scale),0L,LONG(width)),std::clamp(LONG(cursorY+t*scale),0L,LONG(height)),std::clamp(LONG(cursorX+r*scale),0L,LONG(width)),std::clamp(LONG(cursorY+b*scale),0L,LONG(height))};};
+        std::array<D3DRECT,12> cursorRects{};DWORD count=0;
+        auto add=[&](D3DRECT r){if(r.x2>r.x1&&r.y2>r.y1)cursorRects[count++]=r;};
+        if(altAiming){add(rect(-10,-1,-3,2));add(rect(4,-1,11,2));add(rect(-1,-10,2,-3));add(rect(-1,4,2,11));}
+        else for(int i=0;i<12;i++)add(rect(0,float(i),1.f+float(i/2),float(i+1)));
+        if(count)device->Clear(count,cursorRects.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+        displayCamera=overlayCamera;
     }
     drawWorldUI(device);
     if(captureRequested){captureRequested=false;capture(device);}
 }
-void saveSettings(){
+void saveSettings(bool force){
     static std::string previous;static uint64_t lastSave{};
-    auto now=GetTickCount64();if(now-lastSave<1000)return;lastSave=now;
-    std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<desiredPitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\n";
+    auto now=GetTickCount64();if(!force&&now-lastSave<1000)return;lastSave=now;
+    std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<desiredPitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\nrotation_speed="<<rotationSpeed<<"\naim_line="<<(showAimLine?1:0)<<"\ndamage_numbers="<<(showDamageNumbers?1:0)<<"\nauto_ads="<<(automaticADS?1:0)<<"\n";
     if(text.str()==previous)return;
     {std::ofstream file(bridge+"/settings.tmp");file<<text.str();if(!file)return;}
     if(MoveFileExA((bridge+"/settings.tmp").c_str(),(bridge+"/settings.ini").c_str(),MOVEFILE_REPLACE_EXISTING))previous=text.str();
@@ -949,6 +978,7 @@ void loadSettings(){
     desiredYaw=yaw=read("yaw",45,-360,360);desiredPitch=pitch=read("pitch",50,20,80);
     distance=read("distance",1100,200,4000);span=read("span",1500,300,5000);
     orthographic=GetPrivateProfileIntA("camera","orthographic",1,file.c_str())!=0;
+    rotationSpeed=read("rotation_speed",.35f,.1f,1.f);showAimLine=GetPrivateProfileIntA("camera","aim_line",1,file.c_str())!=0;showDamageNumbers=GetPrivateProfileIntA("camera","damage_numbers",1,file.c_str())!=0;automaticADS=GetPrivateProfileIntA("camera","auto_ads",1,file.c_str())!=0;
     autoEnable=GetPrivateProfileIntA("startup","auto_enable",1,file.c_str())!=0;requested=autoEnable;
 }
 void onMessage(Message* m){

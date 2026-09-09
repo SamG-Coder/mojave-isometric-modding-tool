@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include <filesystem>
 #include <string>
+#include "display_settings.hpp"
 namespace fs=std::filesystem;
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){
     wchar_t path[32768]{};if(!GetModuleFileNameW(nullptr,path,32768))return 1;
@@ -22,6 +23,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){
             fs::copy_file(pending,installed,fs::copy_options::overwrite_existing);fs::remove(pending);
         }
         if(!fs::exists(installed))return fail(L"The isometric plugin is missing. Install or rebuild the mod first.");
+        if(!display_settings::applyPending(root))return fail(L"Could not apply display settings. Check that FalloutPrefs.ini is writable; your pending changes were retained.");
         const auto loader=game/L"nvse_loader.exe";
         if(!fs::exists(loader))return fail(L"xNVSE is missing from the New Vegas folder.");
         std::wstring command=L"\""+loader.wstring()+L"\"";

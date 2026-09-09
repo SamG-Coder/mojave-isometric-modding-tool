@@ -230,3 +230,25 @@ User confirmed damage numbers now display; that working state was committed as 2
 Alt hover and Alt click now both request current-floor aim picking. When a downward screen ray first meets non-actor cover above player feet+110, a second ray starts on that same screen ray below feet+100; a successful lower hit replaces the cover hit. Directly picked actors are retained. This is a current-floor cover heuristic rather than semantic roof detection; elevated non-actor targets remain a limitation.
 
 Melee now waits until facing within 25 degrees and until an existing native attack action has finished. Presses are held up to 180 ms (released earlier on observing a swing), with 300 ms between attempts, rather than fixed 70 ms pulses every 500 ms regardless of native animation state. Single non-actor melee clicks also use ground-based distance. Native collision, range and draw readiness still gate attacks. Release build and combat regressions passed; final visual popup placement, roof selection and melee reliability are not yet live verified.
+
+## Native Settings integration (2026-09-09)
+
+- Win32 Release plugin and launcher compiled; isolated display persistence tests passed.
+- Tests check no-op startup, missing preferences preserving pending changes, approved fields applied, unrelated sections/keys preserved, pending file consumed only after successful replacement, and original-file backup.
+- Live initial native menu build: Display options appended to the existing native settings rows; Isometric registered alongside Gameplay/Display/Audio/Controls. Native row objects and callbacks were inspected in title-screen and loaded-game pause menus.
+- Initial narrow-column overlap was corrected by widening the native options container. Final visual confirmation and full keyboard/controller navigation remain to be completed.
+- Display preferences from the live session were successfully consumed by the launcher on restart. Automated tests use isolated temporary preferences and do not change the user's settings.
+
+## Resolution and presentation audit (2026-09-09)
+
+- Added explicit conversion from the world render surface/viewport into final back-buffer coordinates. Alt picking, ordinary picking and projected screen indicators now use this common coordinate system. Presentation drawing binds the back buffer and full output viewport and restores previous render/depth surfaces and viewport afterward.
+- Native HUD dimensions are read from the tile hierarchy rather than assuming a 1280x720 UI. Interaction prompt extents and clickable bounds use the same UI-to-pixel transform. Damage anchors use the displayed camera sample.
+- Cursor motion, cursor/Alt icon, attack/destination rings, aim-line width/endpoint indicators and popup movement scale with output height. Resolution changes preserve the cursor's normalized position. Camera dragging remains in raw mouse counts; its angular sensitivity is independent of resolution.
+- New camera tests pass at 1024x576, 1920x1080, 2560x1440, 3440x1440 and 3840x2160, with half/native/double-size world surfaces and offset viewports. They assert known target locations, rays, letterbox rejection, prompt hitbox transforms and normalized cursor resizing. Existing 1176 camera round trips and all eight test executables also passed.
+- Latest DLL SHA256 matched the installed plugin. Live diagnostic save loaded at 2560x1440 and reported matching world/output viewports with no plugin error. The reported Alt-only visual offset still requires user confirmation: fullscreen focus/readback did not provide a reliable live before/after image in this session.
+
+## Native settings value alignment
+
+- Inspected the installed game's original start_menu.xml: lb_toggle_value takes its position from StartMenu._center_x. The custom Isometric category opens through native category zero, which leaves that value at zero. Native user4 is arrow spacing, not a value box width.
+- Set a shared value-column position and derive safe separation/arrow spacing from the native rendered label and value widths. Recheck after native text layout and value changes; update traits only when dimensions change. Resolve current list membership before reading tiles so closing/rebuilding menus cannot reuse stale tile pointers.
+- Win32 Release build passed. Visual verification of the revised page remains for the next game session.

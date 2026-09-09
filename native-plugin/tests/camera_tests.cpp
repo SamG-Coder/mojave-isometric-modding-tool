@@ -46,5 +46,25 @@ int main(){
     check(length(cross(clipped-start,dir))<.001f,"Roof clipping changed the screen ray");
     check(rayBelowHeight(Vec{0,0,50},dir,100).z==50,"Already below roof ray moved");
     check(rayBelowHeight(start,Vec{1,0,0},100).z==1000,"Horizontal ray produced invalid clipping");
+
+    // Expected screen locations across different render and output sizes, not
+    // just an inverse-pair check using the same erroneous viewport twice.
+    for(auto output: {ScreenPoint{1024,576},ScreenPoint{1920,1080},ScreenPoint{2560,1440},ScreenPoint{3440,1440},ScreenPoint{3840,2160}}){
+        for(float renderScale:{.5f,1.f,2.f}){
+            CameraSample world=c;world.x=output.x*renderScale*.1f;world.y=output.y*renderScale*.1f;world.width=output.x*renderScale*.8f;world.height=output.y*renderScale*.8f;
+            auto screen=presentationCamera(world,output.x*renderScale,output.y*renderScale,output.x,output.y);
+            float px{},py{};check(screen.project({50,100,50},px,py),"Quarter-position target invisible");
+            check(std::abs(px-output.x*.7f)<.01f&&std::abs(py-output.y*.3f)<.01f,"Scaled world target not at expected final pixel");
+            Vec origin,direction;check(screen.ray(output.x*.7f,output.y*.3f,origin,direction),"Scaled Alt pick rejected");
+            check(std::abs(origin.x-50)<.01f&&std::abs(origin.z-50)<.01f,"Alt target changes with output resolution");
+            check(!screen.ray(output.x*.05f,output.y*.5f,origin,direction),"Letterbox margin accepted");
+        }
+        UITransform ui{output.x,output.y,1706.6666f,960.f};auto label=ui.toUI({output.x*.7f,output.y*.3f});
+        auto clickable=ui.toPixels(label);check(std::abs(clickable.x-output.x*.7f)<.01f&&std::abs(clickable.y-output.y*.3f)<.01f,"Prompt and hitbox disagree");
+        auto extent=ui.toPixels({300,30});check(std::abs(extent.x/output.x-300/1706.6666f)<.0001f,"Prompt hitbox uses fixed pixels");
+        auto resized=resizeCursor({960,270},1920,1080,output.x,output.y);check(std::abs(resized.x-output.x*.5f)<.01f&&std::abs(resized.y-output.y*.25f)<.01f,"Resolution change shifts cursor target");
+    }
+    check(!presentationCamera(c,0,720,2560,1440).valid,"Unknown render surface accepted");
+    std::cout<<"Resolution, intermediate surface, letterbox, UI hitbox and resize checks passed.\n";
     std::cout<<tests<<" camera round trips passed across pitch, yaw, projection and viewport offsets.\n";
 }

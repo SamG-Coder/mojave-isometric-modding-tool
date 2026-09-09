@@ -47,6 +47,14 @@ def install_plugin():
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(NATIVE, backup)
     shutil.copy2(source, NATIVE)
+    menus = GAME / "Data" / "menus" / "MojaveIso"
+    menus.mkdir(parents=True, exist_ok=True)
+    for asset in (ROOT / "native-plugin" / "ui").glob("*.xml"):
+        shutil.copy2(asset, menus / asset.name)
+    textures = GAME / "Data" / "textures" / "MojaveIso"
+    textures.mkdir(parents=True, exist_ok=True)
+    for asset in (ROOT / "native-plugin" / "ui").glob("*.dds"):
+        shutil.copy2(asset, textures / asset.name)
     launcher = BUILD.parent / "MojaveIsoLaunch.exe"
     if launcher.exists():
         shutil.copy2(launcher, ROOT / "MojaveIsoLaunch.exe")

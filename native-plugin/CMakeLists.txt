@@ -7,13 +7,13 @@ add_library(MojaveIsoNative SHARED src/plugin.cpp)
 target_compile_features(MojaveIsoNative PRIVATE cxx_std_20)
 target_compile_definitions(MojaveIsoNative PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(MojaveIsoNative PRIVATE /W4 /EHsc)
-target_link_libraries(MojaveIsoNative PRIVATE d3d9 user32 gdi32)
+target_link_libraries(MojaveIsoNative PRIVATE d3d9 user32 gdi32 shell32 ole32 uuid)
 set_target_properties(MojaveIsoNative PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_executable(MojaveIsoLaunch WIN32 src/launcher.cpp)
 target_compile_features(MojaveIsoLaunch PRIVATE cxx_std_20)
 target_compile_definitions(MojaveIsoLaunch PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(MojaveIsoLaunch PRIVATE user32)
+target_link_libraries(MojaveIsoLaunch PRIVATE user32 shell32 ole32 uuid)
 set_target_properties(MojaveIsoLaunch PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_executable(MojaveIsoWheelTests tests/wheel_input_tests.cpp)
@@ -36,3 +36,7 @@ target_compile_features(MojaveIsoNavmeshTests PRIVATE cxx_std_20)
 
 add_executable(MojaveIsoDamageTests tests/damage_number_tests.cpp)
 target_compile_features(MojaveIsoDamageTests PRIVATE cxx_std_20)
+
+add_executable(MojaveIsoDisplayTests tests/display_settings_tests.cpp)
+target_compile_features(MojaveIsoDisplayTests PRIVATE cxx_std_20)
+target_link_libraries(MojaveIsoDisplayTests PRIVATE shell32 ole32 uuid)

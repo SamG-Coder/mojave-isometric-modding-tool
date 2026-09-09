@@ -7,6 +7,23 @@
 #include <string>
 #include <algorithm>
 namespace overlay {
+// OnFramePresent can leave an off-screen render target bound. Draw all screen
+// indicators on the back buffer, and restore targets/depth/viewport afterward.
+class PresentationSurface {
+ IDirect3DDevice9* device;IDirect3DSurface9 *previous{},*depth{},*buffer{};D3DVIEWPORT9 viewport{};bool bound{},touched{};
+public:
+ D3DSURFACE_DESC desc{};
+ explicit PresentationSurface(IDirect3DDevice9* d):device(d){
+  if(FAILED(d->GetRenderTarget(0,&previous))||FAILED(d->GetViewport(&viewport))||FAILED(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&buffer))||FAILED(buffer->GetDesc(&desc)))return;
+  d->GetDepthStencilSurface(&depth);touched=true;d->SetDepthStencilSurface(nullptr);
+  if(FAILED(d->SetRenderTarget(0,buffer))){d->SetDepthStencilSurface(depth);return;}
+  D3DVIEWPORT9 output{0,0,desc.Width,desc.Height,0,1};bound=SUCCEEDED(d->SetViewport(&output));
+ }
+ explicit operator bool()const{return bound;}
+ ~PresentationSurface(){if(touched){device->SetRenderTarget(0,previous);device->SetDepthStencilSurface(depth);device->SetViewport(&viewport);}if(previous)previous->Release();if(depth)depth->Release();if(buffer)buffer->Release();}
+ PresentationSurface(const PresentationSurface&)=delete;PresentationSurface& operator=(const PresentationSurface&)=delete;
+};
+
 struct Vertex {float x,y,z=0,rhw=1;DWORD colour;float u=0,v=0;};
 class Painter {
     IDirect3DDevice9* device{};IDirect3DTexture9* font{};IDirect3DStateBlock9* state{};bool scene{},ownsScene{};
@@ -29,7 +46,7 @@ class Painter {
 public:
     bool begin(IDirect3DDevice9* d){device=d;geometry.clear();glyphs.clear();if(FAILED(device->CreateStateBlock(D3DSBT_ALL,&state)))return false;state->Capture();HRESULT beginResult=device->BeginScene();ownsScene=SUCCEEDED(beginResult);if(FAILED(beginResult)&&beginResult!=D3DERR_INVALIDCALL){state->Release();state=nullptr;return false;}scene=true;makeFont();return true;}
     void rect(float x,float y,float w,float h,DWORD c){quad(geometry,x,y,w,h,c);}
-    void line(float x,float y,float bx,float by,DWORD c){float dx=bx-x,dy=by-y;int n=int(std::max(std::abs(dx),std::abs(dy)));for(int i=0;i<=n;i++){float t=n?float(i)/n:0;rect(x+dx*t,y+dy*t,1.5f,1.5f,c);}}
+    void line(float x,float y,float bx,float by,DWORD c,float thickness=1.5f){float dx=bx-x,dy=by-y;int n=int(std::max(std::abs(dx),std::abs(dy)));for(int i=0;i<=n;i++){float t=n?float(i)/n:0;rect(x+dx*t,y+dy*t,thickness,thickness,c);}}
     void text(float x,float y,const std::string& s,DWORD c){for(unsigned char ch:s){if(ch<32||ch>126)ch='?';quad(glyphs,x,y,16,16,c,float(ch%16)/16,float(ch/16)/8,1.f/16,1.f/8);x+=8;}}
     void finish(){
         if(!scene)return;device->SetVertexShader(nullptr);device->SetPixelShader(nullptr);device->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);

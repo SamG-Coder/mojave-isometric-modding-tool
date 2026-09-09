@@ -63,4 +63,23 @@ struct CameraSample {
         return std::isfinite(px)&&std::isfinite(py)&&px>=x&&py>=y&&px<x+width&&py<y+height;
     }
 };
+// Convert a world-pass viewport to final back-buffer pixels. World rendering
+// may use a smaller surface; its viewport must not be treated as screen pixels.
+inline CameraSample presentationCamera(CameraSample camera,float sourceWidth,float sourceHeight,float outputWidth,float outputHeight){
+    if(!std::isfinite(sourceWidth)||!std::isfinite(sourceHeight)||!std::isfinite(outputWidth)||!std::isfinite(outputHeight)||sourceWidth<=0||sourceHeight<=0||outputWidth<=0||outputHeight<=0){camera.valid=false;return camera;}
+    float sx=outputWidth/sourceWidth,sy=outputHeight/sourceHeight;
+    camera.x*=sx;camera.y*=sy;camera.width*=sx;camera.height*=sy;return camera;
+}
+struct ScreenPoint {float x{},y{};};
+inline ScreenPoint resizeCursor(ScreenPoint p,float oldWidth,float oldHeight,float newWidth,float newHeight){
+    if(newWidth<=0||newHeight<=0)return {};
+    auto clamp=[](float v,float maximum){return std::fmax(0.f,std::fmin(v,maximum-1));};
+    return {clamp(oldWidth>0?p.x*newWidth/oldWidth:newWidth*.5f,newWidth),clamp(oldHeight>0?p.y*newHeight/oldHeight:newHeight*.5f,newHeight)};
+}
+struct UITransform {
+    float pixelsWidth,pixelsHeight,uiWidth,uiHeight;
+    ScreenPoint toUI(ScreenPoint p)const{return {p.x*uiWidth/pixelsWidth,p.y*uiHeight/pixelsHeight};}
+    ScreenPoint toPixels(ScreenPoint p)const{return {p.x*pixelsWidth/uiWidth,p.y*pixelsHeight/uiHeight};}
+};
+
 }
