@@ -28,9 +28,18 @@ struct SightsGate {
 struct Aim {float yaw,pitch;};
 inline engine::Vec direction(Aim a){float c=std::cos(a.pitch);return {std::sin(a.yaw)*c,std::cos(a.yaw)*c,-std::sin(a.pitch)};}
 inline Aim aim(engine::Vec from,engine::Vec to){auto d=to-from;return {std::atan2(d.x,d.y),-std::atan2(d.z,std::max(.001f,std::hypot(d.x,d.y)))};}
+inline float meleeHeading(engine::Vec feet,engine::Vec target,float current,float dt){
+ auto d=target-feet;if(std::hypot(d.x,d.y)<12.f)return current;
+ float delta=std::remainder(std::atan2(d.x,d.y)-current,6.283185307f);
+ float step=6.283185307f*std::clamp(dt,0.f,.05f);
+ return current+std::clamp(delta,-step,step);
+}
 inline float meleeDistance(engine::Vec feet,engine::Vec targetFeet){auto d=targetFeet-feet;return std::max(std::hypot(d.x,d.y),std::abs(d.z));}
 inline bool useAimDownSights(float distance,bool melee,bool alreadyAiming){return !melee&&distance>(alreadyAiming?400.f:500.f);}
 inline bool keepCamera(bool enabled,bool loadedWorld,bool disabling,uint32_t pipboy=0){return enabled&&loadedWorld&&!disabling&&pipboy==0;}
+inline bool restoreThirdPersonBody(bool cameraOwned,bool gameplay,bool talking,bool sitting,bool alreadyThird){
+ return cameraOwned&&!alreadyThird&&(talking||(gameplay&&!sitting));
+}
 inline bool canEngage(float distance,float range,bool clear,bool gameplay,bool alive){return gameplay&&alive&&clear&&distance<=range;}
 inline bool refreshPursuit(uint64_t now,uint64_t previous,float targetShift,float range,bool moving,bool searching){
  if(!previous)return true;

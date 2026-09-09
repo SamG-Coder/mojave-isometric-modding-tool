@@ -25,7 +25,7 @@
 using namespace engine;
 namespace {
 struct DamageNumber {Vec position;float amount;uint64_t started;};
-std::mutex damageMutex;std::vector<DamageNumber> damageNumbers;uint64_t damageNumberCount{};
+std::mutex damageMutex;std::vector<DamageNumber> damageNumbers;uint64_t damageNumberCount{},damageHookCalls{},damagePlayerHits{};
 struct AttackOrder {combat::ShotHold shot;combat::SightsGate sightsGate;uint32_t id{},hitRef{};Vec point{},pursuitTarget{};void* cell{};bool ordered{},single{},held{},sights{};uint64_t started{},lastFire{},lastRepath{},lastReady{},meleeReleaseAt{},aimReadyAt{};} attack;
 struct AimLine {Vec origin{},end{},target{};bool valid{},blocked{};} aimLine;
 Vec lastAimPoint{};uint64_t lastAimUpdate{};
@@ -213,6 +213,10 @@ void __fastcall rotationHook(void* node,void*,const Mat* rot){
         else f=savedFrustum;
     }
 }
+bool __fastcall dialoguePOVHook(void* actor,void*,bool firstPerson){
+    if(actor==player()&&cameraActive()&&dialogue())firstPerson=false;
+    return reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(actor,firstPerson);
+}
 uintptr_t callTarget(uintptr_t a){if(*reinterpret_cast<uint8_t*>(a)!=0xe8)return 0;return a+5+*reinterpret_cast<int32_t*>(a+1);}
 // Supported runtime 1.4.0.525: weapon-fire call 5245BD -> 9BCA60,
 // cdecl, 64-byte argument block. Keep launch position and native pellet spread.
@@ -311,12 +315,14 @@ using HealthDamage=void(__thiscall*)(void*,void*,float);
 HealthDamage originalHealthDamage[2]{};
 float actorHealth(void* actor){auto owner=static_cast<char*>(actor)+0xA4;auto vt=at<void**>(owner,0);return reinterpret_cast<float(__thiscall*)(void*,uint32_t)>(vt[3])(owner,0x10);}
 template<int Index> void __fastcall healthDamageHook(void* actor,void*,void* source,float amount){
-    bool observe=enabled&&source==player()&&actor!=source;
-    uint32_t id=observe?at<uint32_t>(actor,0xC):0;float before=observe?actorHealth(actor):0;
+    ++damageHookCalls;bool observe=enabled&&source==player()&&actor!=source;if(observe)++damagePlayerHits;
+    uint32_t id=observe?at<uint32_t>(actor,0xC):0;
+    // Health is already updated at entry; amount is the signed applied delta.
+    float loss=observe?damage_numbers::notifiedLoss(amount,actorHealth(actor)):0;
     Vec point=observe?at<Vec>(actor,0x30)+Vec{0,0,105}:Vec{};
     originalHealthDamage[Index](actor,source,amount);
     if(!observe||reference(id)!=actor)return;
-    float loss=damage_numbers::lostHealth(before,actorHealth(actor));if(loss<.05f)return;
+    if(loss<.05f)return;
     std::lock_guard<std::mutex> lock(damageMutex);
     if(damageNumbers.size()>=24)damageNumbers.erase(damageNumbers.begin());
     damageNumbers.push_back({point,loss,GetTickCount64()});++damageNumberCount;
@@ -337,6 +343,12 @@ void installHooks(){
     log(hooksReady?"Native camera hooks installed":"Camera hook installation failed");
     if(callTarget(0x5245BD)==0x9BCA60&&callTarget(0x9BD9E2)==0x965620&&patchCall(0x9BD9E2,reinterpret_cast<void*>(projectileAimHook))&&patchCall(0x5245BD,reinterpret_cast<void*>(launchProjectileHook)))log("Isometric projectile launch correction installed");
     else log("Projectile launch call differs from supported runtime; correction refused");
+    // Validated native POV call sites. Guard only active isometric dialogue;
+    // ordinary first person, Pip-Boy and disabled mode pass through unchanged.
+    unsigned povSites{};
+    for(uintptr_t site:{0x58D04Fu,0x60A63Au,0x60A872u,0x7E950Fu,0x8FEB21u,0x8FEB52u,0x8FEBD1u,0x8FEC02u,0x925AEEu,0x925B25u,0x93E8DFu,0x93E8EEu,0x942CC0u,0x942DC9u,0x945B9Du,0x945C5Du,0x9503BAu,0x95044Du,0x95051Au,0x9505F6u,0x953AC7u,0x958EFBu,0x9C75FFu,0x9C7E40u,0x9C99FBu})
+        if(callTarget(site)==0x950110&&patchCall(site,reinterpret_cast<void*>(dialoguePOVHook)))++povSites;
+    log("Dialogue player-body POV guards installed: "+std::to_string(povSites)+"/25");
     void* previousCull{};
     if(replaceSlot(0x101E2EC+0x44,reinterpret_cast<void*>(cullObjectHook),previousCull)){
         originalCull=reinterpret_cast<CullObject>(previousCull);log("World-transform orthographic bound culling installed (compound occlusion excluded)");
@@ -529,10 +541,20 @@ Vec firingOrigin(){
     return pos+Vec{0,0,95};
 }
 void facePoint(Vec point){
-    lastAimPoint=point;lastAimUpdate=GetTickCount64();
+    auto now=GetTickCount64();float dt=lastAimUpdate?std::clamp(float(now-lastAimUpdate)/1000.f,0.f,.05f):.016f;
+    auto process=at<void*>(player(),0x68);auto entry=process&&at<uint8_t>(process,0x28)<=1?at<void*>(process,0x114):nullptr;
+    auto weapon=entry?at<void*>(entry,8):nullptr;bool melee=!weapon||at<uint8_t>(weapon,0xF4)<=2;
     if(!aimOwned){priorAimPitch=at<float>(player(),0x24);aimOwned=true;}
-    auto aim=combat::aim(firingOrigin(),point);
-    at<float>(player(),0x2C)=aim.yaw;at<float>(player(),0x24)=std::clamp(aim.pitch,-1.35f,1.35f);
+    if(melee){
+        if(auto victim=attack.id?reference(attack.id):nullptr)point=at<Vec>(victim,0x30);
+        auto feet=at<Vec>(player(),0x30);
+        at<float>(player(),0x2C)=combat::meleeHeading(feet,point,at<float>(player(),0x2C),dt);
+        at<float>(player(),0x24)=0;
+    }else{
+        auto aim=combat::aim(firingOrigin(),point);
+        at<float>(player(),0x2C)=aim.yaw;at<float>(player(),0x24)=std::clamp(aim.pitch,-1.35f,1.35f);
+    }
+    lastAimPoint=point;lastAimUpdate=now;
 }
 bool shotClear(Vec from,Vec to,void* victim){
     auto delta=to-from;auto shotDistance=length(delta);if(shotDistance<1)return true;
@@ -658,7 +680,8 @@ void combatTick(){
 void status(){
     std::ostringstream s;s<<"{\"pid\":"<<GetCurrentProcessId()<<",\"frames\":"<<frames<<",\"camera_updates\":"<<cameraUpdates<<",\"hooks_ready\":"<<(hooksReady?"true":"false")<<",\"enabled\":"<<(enabled?"true":"false")<<",\"game_mode\":"<<(gameMode()?"true":"false")<<",\"orthographic\":"<<(orthographic?"true":"false")<<",\"moving\":"<<(moving?"true":"false")<<",\"width\":"<<width<<",\"height\":"<<height<<",\"cursor\":["<<cursorX<<","<<cursorY<<"],\"target\":["<<target.x<<","<<target.y<<","<<target.z<<"]";
     s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"planner_cpu_ms\":"<<plannerCpuMs<<",\"planner_step_ms\":"<<lastPlannerStepMs<<",\"planner_updates\":"<<plannerSteps<<",\"navigation_source\":\""<<navigationSource<<"\",\"native_triangles\":"<<nativeTriangles<<",\"native_expanded\":"<<nativeExpanded<<",\"native_planning_ms\":"<<nativePlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"aim_down_sights_requested\":"<<(attack.sights?"true":"false")<<",\"aim_down_sights_active\":"<<(nativeAiming()?"true":"false")<<",\"pipboy_mode\":"<<pipboyMode()<<",\"seated\":"<<(seated()?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
-    if(player()){auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
+    if(player()){s<<",\"third_person_body\":"<<(at<uint8_t>(player(),0x64C)?"true":"false");auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
+    s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);
 }
@@ -747,7 +770,7 @@ void updateDamageNumbers(){
     float uw=get(rootTile,0xFB1,1280),uh=get(rootTile,0xFB0,720);auto nativeText=at<void*>(hud,0xA8);
     for(size_t i=0;i<labels.size();i++){
         bool show=active()&&renderCamera.valid&&i<visible.size();
-        if(show&&!labels[i])labels[i]=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,"menus\\MojaveIso\\damage.xml");
+        if(show&&!labels[i]){labels[i]=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,"menus\\MojaveIso\\damage.xml");log(labels[i]?"Damage popup tile created":"Damage popup tile failed to load");}
         auto label=labels[i];if(!label)continue;set(label,0xFA3,0);if(!show)continue;
         auto n=visible[i];float age=float(now-n.started)/1000.f,x{},y{};
         if(!renderCamera.project(n.position,x,y))continue;y-=age*32;
@@ -926,11 +949,13 @@ void onMessage(Message* m){
             }
         }
         if(pendingDisable&&fadeAlpha>=.99f){pendingDisable=false;setEnabled(false);fadeHoldUntil=now+150;}
-        // A native POV change must not disable isometric input/body rendering.
-        // Leave furniture and dialogue animation state alone; only restore POV
-        // during ordinary gameplay while the user still owns the isometric mode.
-        if(cameraActive()&&!pipboyMode()&&gameMode()&&!dialogue()&&!seated()&&!at<uint8_t>(player(),0x64C))
+        // Dialogue can enter native first person even while our camera stays
+        // isometric. Restore the native third-person body in dialogue too.
+        // cameraActive excludes every Pip-Boy opening/open/closing state.
+        if(combat::restoreThirdPersonBody(cameraActive(),gameMode(),dialogue(),seated(),player()&&at<uint8_t>(player(),0x64C))){
             reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
+            if(dialogue())log("Restored third-person player body during dialogue");
+        }
         installMouseHook();
         if(requested&&!enabled&&hooksReady&&reference(0x14)==player()&&gameMode()&&!dialogue()&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
             if(!autoReadySince)autoReadySince=now;

@@ -41,6 +41,15 @@ int main(){
  check(!combat::keepCamera(true,true,true),"Explicit disable failed to release camera");
  for(uint32_t mode:{1u,2u,3u,4u})check(!combat::keepCamera(true,true,false,mode),"Pip-Boy camera not released during transition");
  check(combat::keepCamera(true,true,false,0),"Closing Pip-Boy did not restore isometric ownership");
+ check(combat::restoreThirdPersonBody(true,false,true,false,false),"Dialogue menu failed to restore player body");
+ check(combat::restoreThirdPersonBody(true,false,true,true,false),"Seated dialogue failed to retain player body");
+ check(!combat::restoreThirdPersonBody(false,false,true,false,false),"Pip-Boy or disabled camera forced third person");
+ check(!combat::restoreThirdPersonBody(true,false,false,false,false),"Unrelated menu forced third person");
+ check(!combat::restoreThirdPersonBody(true,true,false,true,false),"Furniture gameplay changed native POV");
+ check(!combat::restoreThirdPersonBody(true,false,true,false,true),"Visible dialogue body triggered repeated POV changes");
+ check(combat::meleeHeading({0,0,0},{1,-1,40},1.2f,.016f)==1.2f,"Overlapping melee target spun the player");
+ check(std::abs(combat::meleeHeading({0,0,0},{100,0,0},0,.016f))<.101f,"Melee rotation exceeded its rate limit");
+ check(combat::meleeHeading({0,0,0},{-1,-100,0},3.13f,.016f)>3.13f,"Melee yaw wrap took the long rotation");
  combat::SightsGate sights;
  check(!sights.ready(1000,true,false),"Submitted aim input treated as native aiming");
  check(!sights.ready(1100,true,true),"Native aim had no settling interval");
