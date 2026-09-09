@@ -40,6 +40,8 @@ void open(int kind){
   add("Damage numbers",L"",L"damage",{L"0",L"1"},{"Off","On"},showDamageNumbers?L"1":L"0");
   add("Automatic distant aiming",L"",L"ads",{L"0",L"1"},{"Off","On"},automaticADS?L"1":L"0");
   add("Start isometric after loading",L"",L"auto",{L"0",L"1"},{"Off","On"},autoEnable?L"1":L"0");
+  add("Experimental RTX Remix",L"",L"rtx_remix",{L"0",L"1",L"2"},{"Off","On","Setup"},std::to_wstring(rtxMode));
+  add("Experimental DLSS 5",L"",L"dlss5",{L"0",L"2"},{"Off","On"},std::to_wstring(GetPrivateProfileIntW(L"bridge",L"mode",0,(std::filesystem::path(bridge)/L"dlss5/bridge.ini").c_str())));
  }
 
 }
@@ -71,8 +73,14 @@ bool apply(){
   if(!changed)std::filesystem::remove(tmp,ec);
   message=changed?"Saved. Applies next time you start the game.":"No new display changes.";
  }else{
-  for(auto& r:rows){auto v=r.values[r.selected];float n=wcstof(v.c_str(),nullptr);if(r.key==L"projection")orthographic=n!=0;else if(r.key==L"span")span=n;else if(r.key==L"pitch")desiredPitch=n;else if(r.key==L"rotation")rotationSpeed=n;else if(r.key==L"aim_line")showAimLine=n!=0;else if(r.key==L"damage")showDamageNumbers=n!=0;else if(r.key==L"ads")automaticADS=n!=0;else if(r.key==L"auto")autoEnable=n!=0;}
-  saveSettings(true);message="Isometric settings applied.";
+  int dlssRequested=0,remixRequested=rtxMode;
+  for(auto& r:rows){if(r.key==L"dlss5")dlssRequested=_wtoi(r.values[r.selected].c_str());if(r.key==L"rtx_remix")remixRequested=_wtoi(r.values[r.selected].c_str());}
+  if(dlssRequested&&remixRequested){message="Choose DLSS 5 or RTX Remix, then restart.";return false;}
+  if(dlssRequested&&!std::filesystem::exists(std::filesystem::path(bridge)/L"dlss5/candidate/host64/dlss5-feed-host64.exe")){message="DLSS 5 runtime is not installed.";return false;}
+  for(auto& r:rows)if(r.key==L"rtx_remix"&&r.values[r.selected]==L"1"&&!std::filesystem::exists(std::filesystem::path(bridge)/"remix/profile/catalog.jsonl")){message="Run Setup in a loaded game to create a profile first.";return false;}
+  if(!WritePrivateProfileStringW(L"bridge",L"mode",std::to_wstring(dlssRequested).c_str(),(std::filesystem::path(bridge)/L"dlss5/bridge.ini").c_str())){message="Could not save DLSS setting.";return false;}
+  for(auto& r:rows){auto v=r.values[r.selected];float n=wcstof(v.c_str(),nullptr);if(r.key==L"projection")orthographic=n!=0;else if(r.key==L"span")span=n;else if(r.key==L"pitch")desiredPitch=n;else if(r.key==L"rotation")rotationSpeed=n;else if(r.key==L"aim_line")showAimLine=n!=0;else if(r.key==L"damage")showDamageNumbers=n!=0;else if(r.key==L"ads")automaticADS=n!=0;else if(r.key==L"auto")autoEnable=n!=0;else if(r.key==L"rtx_remix")rtxMode=std::clamp(int(n),0,2);}
+  saveSettings(true);message=dlssRequested!=renderer_bridge::mode?"Saved. Restart the game for DLSS 5.":rtxMode!=rtxSessionMode?"Saved. Restart for RTX mode; first setup installs runtime.":"Isometric settings applied.";
  }
  for(auto& r:rows)r.original=r.values[r.selected];return true;
 }

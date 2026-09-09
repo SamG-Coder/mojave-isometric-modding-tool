@@ -296,3 +296,30 @@ Melee now waits until facing within 25 degrees and until an existing native atta
 - Picking now tests the uncut screen ray first and retains its direct interaction hit when the reference is in the player's cell and its origin is within 150 units of the player's floor. This avoids removing a door's upper portion by beginning the ray at chest height. The Alt/context high-cover filter also preserves these interactions.
 - Roof/scenery hits and upstairs references still follow the existing floor-clipping logic. The test uses reference height to classify the floor, not the height of the clicked point. No interaction-distance or native activation changes.
 - Release plugin, camera and context tests passed, including an upper-door ray intersection that chest-height clipping would start behind, plus roof, upstairs, wrong-cell and invalid-height exclusions. DLL installed with backup while the game was closed; hashes match. User confirmation on the affected door remains outstanding. This follow-up is not yet committed.
+
+## Context backdrop sizing and redundant Stop action
+
+- Door picking changes committed and pushed as a2c1377 before these follow-up edits.
+- Replaced reliance on native text-tile width/height alone with FontManager string dimensions (0xA1B020; singleton 0x11F33F8), verified against local JIP GameUI.h. Measures title and all action strings with their native font and zoom, including the selection prefix. Backdrop width, row height and total height derive from these measurements; native tile extents remain a conservative lower bound.
+- Removed Stop from the menu and dispatch enum. Opening the menu still stops the current order.
+- Release plugin and context tests passed, including larger text expanding the backdrop in both dimensions, fewer actions reducing height, absence of Stop, and existing action/edge/hitbox checks. Installed with DLL backup while the game was closed, and build/installed hashes match. Visual confirmation of the larger-text case remains outstanding; these follow-up edits are not committed yet.
+
+## Experimental RTX capture/profile modes
+
+- Added native Off/On/Setup row with persistence, session mode tracking and restart notice. Launcher applies the selected runtime mode before xNVSE, passes the exact saved profile through DXVK_RTX_CONFIG_FILE, and supports --rtx-off recovery.
+- Pinned official NVIDIA runtime remix-1.5.2 release archive SHA256 cc424be4dd1a0c6fd922bc6a7f8e5f6582baea7043a38afa6686d8b6faabad01. Verified the downloaded archive, including .trex, d3d9.dll and NvRemixLauncher32.exe. No upstream source code or binaries are committed; runtime cache is ignored generated data.
+- Setup uses bounded native reference scanning and region/view deduplication; requests native single-frame captures via configurable F24 only when the game is foreground. Actual exports/assets are independently indexed. No runtime capture API exists in the inspected public remix_c.h; F24 and captureShowMenuOnHotkey are verified in NVIDIA's runtime options/keybinding sources. On loads configuration, not captured scenes as replacement mods.
+- Catalogue regression tests passed for persistence, repeated references, scene keys, JSON escaping and keeping requests separate from capture confirmations. Release plugin and launcher built successfully.
+- Provisioning tested against the actual pinned archive in an isolated game directory, including Setup, On preserving profile edits, Off disabling the owned interposer, rejecting/preserving a foreign DLL, and the actual Windows PowerShell executable used by the launcher. The real game remains Off; the verified archive is cached for first Setup activation.
+- Live capture completion, shader/orthographic compatibility and RTX visual quality are NOT verified. Export indexing records observed files rather than validating USD contents. Material conversion and a full game-specific Remix compatibility profile are not implemented by this capture/catalogue feature.
+
+## Independent DLSS 5 investigation (2026-09-09)
+
+- RTX Remix switched Off and its owned d3d9 entry point disabled. Existing profiles retained.
+- Isolated DLSS5-Feeder 0.15.1 / ReShade 6.8 / classic RenoDX 4.5 candidate under runtime/dlss5; NVIDIA DLL signatures validated. RTX 5080 driver 616.64 passed the 300-frame synthetic host test, with actual feature-18 neural evaluations confirmed in ReShade.log. A second run through desktop/test-dlss5.ps1 passed and checked fresh logs.
+- Windows blocked dgVoodoo2 2.87.4 as a virus or potentially unwanted software. No security setting was changed. The incomplete renderer stack was not installed in the game. Game DLSS quality, compatibility and full-resolution performance remain unverified; see desktop/DLSS5.md.
+- Fixed launcher provisioning to use an active Remix marker, so a dormant installation manifest does not re-run Remix setup on every Steam launch. Off removes the marker; On/Setup create it after installing the entry point. Off marker/removal regression passed in an isolated fixture. Release launcher built and installed with backup; source/install SHA256 match. git diff --check passed. No commit or push performed.
+
+## Independent DLSS bridge and click-marker regression (2026-09-09)
+
+The experimental D3D9On12 bridge passed colour/depth transport and synthetic neural roundtrips; a live 2560x1440 session submitted over 5,000 neural frames. Neural updates measured approximately 15 fps. Camera reprojection tests pass at 720p and 1440p. The destination marker's bulk Clear call appeared in two NVIDIA fail-fast crash dumps; the replacement submits single rectangles and passes 120 draws with exact-pixel checks at 640x360 and 2560x1440. Live clicking after this patch and full menu/save/reset coverage remain unverified. See desktop/DLSS5.md for detailed scope.

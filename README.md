@@ -96,13 +96,31 @@ While the orthographic camera is active, light, shadow and specular fade distanc
 
 The context menu uses native HUD tiles, the current HUD font/colour/zoom and a native menu background texture. It sits beside the click and stays inside the screen using native UI coordinates.
 
-- Living actors: Talk/Interact, Attack, Open VATS, Walk here, Stop and Cancel.
-- Dead actors: Search, Walk here, Stop and Cancel.
+- Living actors: Talk/Interact, Attack, Open VATS, Walk here and Cancel.
+- Dead actors: Search, Walk here and Cancel.
 - Doors and containers: Open / close or Open, followed by movement and cancellation actions.
 - Furniture, terminals and activators: Sit / use or Use. The engine selects the actual furniture or scripted interaction.
 - Loose inventory objects: Take. Plants: Harvest.
-- Ground and scenery: Move/Walk here, Stop and Cancel.
+- Ground and scenery: Move/Walk here and Cancel.
 
 Left-click a row to select it. Outside clicks and a second right-click dismiss the menu without sending a world click. Escape also dismisses it while retaining the native pause-menu behavior. Middle-mouse rotation dismisses it; wheel zoom is held while it is open. Native menus, loss of focus, resolution changes, save loads and an unavailable target dismiss it. The world is not paused.
 
 Activation walks into reach and uses the existing native activation flow, retaining locks, ownership, dialogue choices and scripted behavior. Open VATS hands off to the game's regular VATS control; it does not force the selected target or bypass VATS eligibility. The menu exposes supported actions by object type, not an enumeration of arbitrary mod-script commands.
+
+### Experimental RTX Remix: Off / On / Setup
+
+In native Settings > Isometric, select **Experimental RTX Remix**, then Apply. Restart through Steam to change runtime modes. The initial value is Off.
+
+- **Off:** stops catalogue collection and, on next launch, removes this integration's verified entry DLL from the game path. Profiles and captures remain on disk. Other renderer DLLs are never overwritten or removed.
+- **Setup:** installs the checksum-pinned NVIDIA Remix 1.5.2 runtime on restart, then records loaded reference IDs, base IDs, cells, positions and camera regions as you play. It requests a single-frame Remix capture after five seconds in a region/view, no more often than every 20 seconds, with at most three attempts per scene and 64 requests per session. Collection runs only in active isometric gameplay. It incrementally indexes the meshes/materials/textures and other files actually exported by Remix. Requests and observed exports are separate records.
+- **On:** loads the same saved rtx.conf through DXVK_RTX_CONFIG_FILE and runs the runtime without automatic catalogue collection. The menu requires a catalogue from Setup first. It does not interpret captured USD scenes as replacement mods.
+
+The profile is `runtime/remix/profile/rtx.conf`, with the cumulative catalogue in `runtime/remix/profile/catalog.jsonl`. Actual Remix exports stay in the game's `rtx-remix/captures` folder and are referenced by the catalogue. Capture contents depend on what the runtime recognizes; the native reference catalogue is not a substitute for GPU mesh/material captures. Existing profile configuration edits are retained. Catalogue writes are batched and scene/reference records deduplicated across sessions. `runtime/status.json` exposes requested/session modes and capture status.
+
+This is experimental capture/profile plumbing, not a validated New Vegas RTX remaster: programmable-shader capture, orthographic rendering, lighting/material conversion and native UI compatibility still need live testing and integration. Setup does not automatically author PBR replacement materials or fix incompatible render passes. Native capture indexing observes files; it does not validate the contents of every USD export. No claim is made that all game assets are captured correctly.
+
+For recovery if the experimental renderer prevents reaching the menu, close the game and run `MojaveIsoLaunch.exe --rtx-off`. It persists Off, disables this integration's entry DLL and starts the game. Runtime provisioning failures are recorded in `runtime/remix/error.txt`.
+
+### Experimental independent DLSS 5
+
+Settings > Isometric > Experimental DLSS 5 > On, Apply, then restart through Steam. Keep RTX Remix Off. This enables the experimental native-resolution D3D9On12/helper bridge; it does not provide frame generation or ray tracing. See [DLSS5.md](desktop/DLSS5.md) for supported behavior, dependencies, validation and known limitations.

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 namespace context_menu {
-enum class Action {Activate,Attack,Vats,Move,Stop,Cancel};
+enum class Action {Activate,Attack,Vats,Move,Cancel};
 struct Row {Action action;std::string label;};
 inline bool pickup(unsigned k){return k==0x18||k==0x19||k==0x1D||k==0x1F||k==0x28||k==0x29||k==0x2E||k==0x2F||k==0x31;}
 inline bool activatable(unsigned k){return pickup(k)||k==0x15||k==0x16||k==0x17||k==0x1B||k==0x1C||k==0x26||k==0x27||k==0x2A||k==0x2B;}
@@ -24,7 +24,7 @@ inline std::vector<Row> actions(unsigned kind,bool dead,bool attackable,bool obj
  if(object&&activatable(kind))r.push_back({Action::Activate,verb(kind,dead)});
  if(object&&attackable){r.push_back({Action::Attack,"Attack"});r.push_back({Action::Vats,"Open VATS"});}
  r.push_back({Action::Move,object?"Walk here":"Move here"});
- r.push_back({Action::Stop,"Stop"});r.push_back({Action::Cancel,"Cancel"});return r;
+ r.push_back({Action::Cancel,"Cancel"});return r;
 }
 struct Layout {
  float x{},y{},width{},header{},rowHeight{};size_t count{};

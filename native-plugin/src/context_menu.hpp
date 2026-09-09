@@ -46,9 +46,19 @@ void updateContext(){
  auto textStyle=[&](void* t){auto source=at<void*>(hud,0xA8);
   for(uint32_t id:{0xFB9u,0xFB2u,0xFB3u,0xFB4u,0xFB8u})if(auto v=tileValue(source,id))settings_menu::set(t,id,at<float>(v,8));
  };
- auto title=child("Title");settings_menu::text(title,"[ "+context.title+" ]");textStyle(title);
- float textHeight=std::max(24.f,settings_menu::get(title,0xFB0,24)),textWidth=settings_menu::get(title,0xFB1,240);
- for(size_t i=0;i<context.rows.size();++i){auto t=child(("Row"+std::to_string(i)).c_str());textStyle(t);settings_menu::text(t,"  "+context.rows[i].label);textHeight=std::max(textHeight,settings_menu::get(t,0xFB0,24));textWidth=std::max(textWidth,settings_menu::get(t,0xFB1,240));}
+ // Tile width/height can be absent or stale until native text layout. Measure
+ // actual strings through FontManager instead, including the selection prefix.
+ auto measure=[&](void* tile,const std::string& text){
+  Vec dims{};auto fonts=global(0x11F33F8);
+  auto font=uint32_t(settings_menu::get(tile,0xFB9,3));
+  if(fonts)reinterpret_cast<Vec*(__thiscall*)(void*,Vec*,const char*,uint32_t,float,uint32_t)>(0xA1B020)(fonts,&dims,text.c_str(),font,3.402823466e+38F,0);
+  float zoom=settings_menu::get(tile,0xFB8,100.f)/100.f;
+  if(!std::isfinite(zoom)||zoom<=0)zoom=1;
+  return ScreenPoint{std::max(settings_menu::get(tile,0xFB1,0),std::isfinite(dims.x)?dims.x*zoom:0.f),std::max(settings_menu::get(tile,0xFB0,24),std::isfinite(dims.y)?dims.y*zoom:24.f)};
+ };
+ auto title=child("Title");auto titleText="[ "+context.title+" ]";settings_menu::text(title,titleText);textStyle(title);
+ auto titleSize=measure(title,titleText);float textHeight=std::max(24.f,titleSize.y),textWidth=titleSize.x;
+ for(size_t i=0;i<context.rows.size();++i){auto t=child(("Row"+std::to_string(i)).c_str());textStyle(t);settings_menu::text(t,"  "+context.rows[i].label);auto size=measure(t,"> "+context.rows[i].label);textHeight=std::max(textHeight,size.y);textWidth=std::max(textWidth,size.x);}
  context.layout=context_menu::layout({context.anchor.x*ui.x,context.anchor.y*ui.y},ui,context.rows.size(),textHeight,textWidth);
  auto& l=context.layout;UITransform transform{width,height,ui.x,ui.y};int selected=l.hit(transform.toUI({cursorX,cursorY}));
  settings_menu::set(context.tile,0xFA1,l.x);settings_menu::set(context.tile,0xFA2,l.y);settings_menu::set(context.tile,0xFB1,l.width);settings_menu::set(context.tile,0xFB0,l.height());
@@ -70,7 +80,6 @@ bool contextInput(bool click){
  case context_menu::Action::Attack:if(combatActor(ref))attackTarget(ref,bodyPoint(ref));break;
  case context_menu::Action::Vats:if(combatActor(ref)){stop();facePoint(bodyPoint(ref));run("TapControl 16");note="Opening native VATS";}break;
  case context_menu::Action::Move:{stop();Vec floor{};if(length(point-at<Vec>(player(),0x30))<=6000&&groundProbe(point,floor))planDestination(floor,0);else note="No walkable ground at this point";break;}
- case context_menu::Action::Stop:stop();break;
  case context_menu::Action::Cancel:break;
  }
  return true;

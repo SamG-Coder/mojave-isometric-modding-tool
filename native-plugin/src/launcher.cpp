@@ -6,7 +6,7 @@
 #include <string>
 #include "display_settings.hpp"
 namespace fs=std::filesystem;
-int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){
+int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR arguments,int){
     wchar_t path[32768]{};if(!GetModuleFileNameW(nullptr,path,32768))return 1;
     const auto root=fs::path(path).parent_path(),game=root.parent_path();
     auto fail=[](const wchar_t* message){MessageBoxW(nullptr,message,L"New Vegas Isometric",MB_OK|MB_ICONERROR);return 1;};
@@ -24,6 +24,34 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int){
         }
         if(!fs::exists(installed))return fail(L"The isometric plugin is missing. Install or rebuild the mod first.");
         if(!display_settings::applyPending(root))return fail(L"Could not apply display settings. Check that FalloutPrefs.ini is writable; your pending changes were retained.");
+        const auto dlssDir=root/L"runtime/dlss5",aaBackup=dlssDir/L"display-backup.ini";
+        const auto dlssMode=GetPrivateProfileIntW(L"bridge",L"mode",0,(dlssDir/L"bridge.ini").c_str());
+        const auto prefs=display_settings::prefsPath();
+        if(dlssMode){
+            fs::create_directories(dlssDir);
+            if(!fs::exists(aaBackup)&&!WritePrivateProfileStringW(L"Display",L"iMultiSample",display_settings::read(prefs,L"Display",L"iMultiSample",L"0").c_str(),aaBackup.c_str()))return fail(L"Could not preserve anti-aliasing settings for DLSS.");
+            if(!WritePrivateProfileStringW(L"Display",L"iMultiSample",L"0",prefs.c_str()))return fail(L"Could not disable MSAA for the DLSS depth buffer.");
+        }else if(fs::exists(aaBackup)){
+            if(display_settings::read(prefs,L"Display",L"iMultiSample",L"0")==L"0"&&!WritePrivateProfileStringW(L"Display",L"iMultiSample",display_settings::read(aaBackup,L"Display",L"iMultiSample",L"0").c_str(),prefs.c_str()))return fail(L"Could not restore anti-aliasing settings.");
+            fs::remove(aaBackup);
+        }
+        if(arguments&&std::wstring(arguments)==L"--rtx-off")WritePrivateProfileStringW(L"experimental",L"rtx_remix",L"0",(root/L"runtime/settings.ini").c_str());
+        unsigned mode=GetPrivateProfileIntW(L"experimental",L"rtx_remix",0,(root/L"runtime/settings.ini").c_str());
+        if(mode>2)mode=0;
+        const wchar_t* names[]{L"Off",L"On",L"Setup"};
+        if(mode||fs::exists(root/L"runtime/remix/active")){
+            auto script=root/L"desktop/remix-runtime.ps1";
+            if(!fs::exists(script))return fail(L"RTX setup script is missing. Restore desktop/remix-runtime.ps1.");
+            wchar_t windows[32768]{};GetWindowsDirectoryW(windows,32768);
+            auto powershell=fs::path(windows)/L"System32/WindowsPowerShell/v1.0/powershell.exe";
+            std::wstring setup=L"\""+powershell.wstring()+L"\" -NoProfile -ExecutionPolicy Bypass -File \""+script.wstring()+L"\" -Mode "+names[mode];
+            STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
+            if(!CreateProcessW(powershell.c_str(),setup.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,root.c_str(),&si,&pi))return fail(L"Could not start RTX setup.");
+            WaitForSingleObject(pi.hProcess,INFINITE);DWORD result{};GetExitCodeProcess(pi.hProcess,&result);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
+            if(result)return fail(L"RTX setup stopped. See IsometricModdingTool/runtime/remix/error.txt. Existing conflicting renderers were preserved.");
+        }
+        SetEnvironmentVariableW(L"MOJAVE_RTX_MODE",std::to_wstring(mode).c_str());
+        if(mode)SetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE",(root/L"runtime/remix/profile/rtx.conf").c_str());
         const auto loader=game/L"nvse_loader.exe";
         if(!fs::exists(loader))return fail(L"xNVSE is missing from the New Vegas folder.");
         std::wstring command=L"\""+loader.wstring()+L"\"";

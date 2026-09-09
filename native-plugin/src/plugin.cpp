@@ -12,6 +12,9 @@
 #include <mutex>
 #include <iomanip>
 #include "damage_numbers.hpp"
+#include "remix_catalog.hpp"
+#include "renderer_bridge.hpp"
+#include "dlss_bridge_channel.hpp"
 #include "lighting_distance.hpp"
 #include <map>
 #include <type_traits>
@@ -21,6 +24,7 @@
 #include "wheel_input.hpp"
 #include "pathfinder.hpp"
 #include "overlay.hpp"
+#include "overlay_rects.hpp"
 #include "cutaway.hpp"
 #include "combat_math.hpp"
 #include "route_follower.hpp"
@@ -43,11 +47,14 @@ struct Cover{uint32_t id;void* node;};std::vector<Cover> occludingCover;
 overlay::Painter hudPainter,fadePainter;float fadeAlpha{};uint64_t fadeHoldUntil{};bool pendingDisable{};
 WheelInput wheelInput;std::atomic<int> mouseDeltaX{},mouseDeltaY{};
 CameraSample renderCamera{},displayCamera{},overlayCamera{};float renderTargetWidth{},renderTargetHeight{};float lastPickError=-1;
+struct BridgeCamera {CameraSample camera;float width{},height{};};
+std::map<uint64_t,BridgeCamera> bridgeCameras;BridgeCamera bridgeVisibleCamera;bool bridgeImageVisible{};
 std::string root, bridge; Console* console{}; Scripts* scripts{};
 bool enabled{},requested{},hooksReady{},moving{},captureRequested{},lastL{},lastF{},lastR{};
 float rotationSpeed=.35f;bool showAimLine=true,showDamageNumbers=true,automaticADS=true;
 void saveSettings(bool force=false);void installSettingsMenu();void updateLighting(bool enable);
 bool autoEnable=true; bool worldCameraArmed{};
+int rtxMode{},rtxSessionMode{};void rtxTick();void rtxReleaseKey();std::string rtxStatus();
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
 uint32_t interactionId{},hoverRef{};uint64_t markerUntil{},activationStarted{},lastFrameTick{};
 float cameraBlend=0, frameDt=0.016f, desiredYaw=45,desiredPitch=50;
@@ -732,6 +739,7 @@ void status(){
     s<<",\"world_surface\":["<<renderTargetWidth<<","<<renderTargetHeight<<"],\"world_viewport\":["<<renderCamera.x<<","<<renderCamera.y<<","<<renderCamera.width<<","<<renderCamera.height<<"],\"display_viewport\":["<<displayCamera.x<<","<<displayCamera.y<<","<<displayCamera.width<<","<<displayCamera.height<<"]";
     s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"planner_cpu_ms\":"<<plannerCpuMs<<",\"planner_step_ms\":"<<lastPlannerStepMs<<",\"planner_updates\":"<<plannerSteps<<",\"navigation_source\":\""<<navigationSource<<"\",\"native_triangles\":"<<nativeTriangles<<",\"native_expanded\":"<<nativeExpanded<<",\"native_planning_ms\":"<<nativePlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"aim_down_sights_requested\":"<<(attack.sights?"true":"false")<<",\"aim_down_sights_active\":"<<(nativeAiming()?"true":"false")<<",\"pipboy_mode\":"<<pipboyMode()<<",\"seated\":"<<(seated()?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
     if(player()){s<<",\"third_person_body\":"<<(at<uint8_t>(player(),0x64C)?"true":"false");auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
+    s<<",\"rtx_mode\":"<<rtxMode<<",\"rtx_session_mode\":"<<rtxSessionMode<<",\"rtx_status\":"<<remix_catalog::quote(rtxStatus());
     s<<",\"context_menu_open\":"<<(contextOpen?"true":"false");
     s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
@@ -874,7 +882,7 @@ void destinationMarker(IDirect3DDevice9* device){
         if(px<1||py<1||px>=LONG(width)-2||py>=LONG(height)-2)continue;
         dots[count++]={std::max(0L,px-stroke),std::max(0L,py-stroke),std::min(LONG(width),px+stroke+1),std::min(LONG(height),py+stroke+1)};
     }
-    if(count)device->Clear(count,dots.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+    if(count)overlay::clearRects(device,count,dots.data(),hudColour());
 }
 std::string objectName(void* ref){
     auto base=ref?at<void*>(ref,0x20):nullptr;if(!base)return "World object";auto type=at<uint8_t>(base,4);int offset=(type==0x2A||type==0x2B)?0xD0:(type==0x1B?0x3C:(type==0x31?0x48:0x30));
@@ -945,6 +953,32 @@ void nativeInteraction(){
     actionBoxes.push_back({hoverRef,pixel.x,pixel.y,extent.x,extent.y});
 }
 #include "context_menu.hpp"
+#include "remix_setup.hpp"
+using RenderInterface=void(__thiscall*)(void*,void*,bool);
+RenderInterface originalRenderInterface{};
+void __fastcall renderInterfaceHook(void* ui,void*,void* culler,bool pipboyVisible){
+    auto renderer=global(0x11F4748);auto device=renderer?at<IDirect3DDevice9*>(renderer,0x288):nullptr;
+    bridgeImageVisible=false;
+    if(device&&active()&&!pipboyVisible){
+        auto prior=renderer_bridge::pipeline?renderer_bridge::pipeline->frame:0;
+        renderer_bridge::frame(device,presentationCamera(renderCamera,renderTargetWidth,renderTargetHeight,width,height));
+        if(auto p=renderer_bridge::pipeline.get()){
+            if(p->frame!=prior){if(p->frame==1)bridgeCameras.clear();bridgeCameras[p->frame]={renderCamera,renderTargetWidth,renderTargetHeight};while(bridgeCameras.size()>4)bridgeCameras.erase(bridgeCameras.begin());}
+            auto found=bridgeCameras.find(p->displayedFrame);if(p->composited&&found!=bridgeCameras.end()){bridgeVisibleCamera=found->second;bridgeImageVisible=true;}
+        }
+    }else renderer_bridge::suspend();
+    originalRenderInterface(ui,culler,pipboyVisible);
+}
+void installInterfaceBridge(){
+    if(!renderer_bridge::mode)return;
+    // New Vegas 1.4.0.525 pre-interface call, also documented by JohnnyGuitar CameraOverlay.
+    auto call=reinterpret_cast<unsigned char*>(0x7144D3);if(*call!=0xE8){log("DLSS pre-interface call unavailable");return;}
+    originalRenderInterface=reinterpret_cast<RenderInterface>(call+5+*reinterpret_cast<int32_t*>(call+1));
+    DWORD old{};if(VirtualProtect(call,5,PAGE_EXECUTE_READWRITE,&old)){
+        *reinterpret_cast<int32_t*>(call+1)=int32_t(reinterpret_cast<unsigned char*>(&renderInterfaceHook)-(call+5));
+        DWORD ignored{};VirtualProtect(call,5,old,&ignored);FlushInstructionCache(GetCurrentProcess(),call,5);log("DLSS pre-interface compositor installed");
+    }
+}
 void drawWorldUI(IDirect3DDevice9* device){
     if(showAimLine&&active()&&altAiming&&!lastMiddle&&aimLine.valid&&GetTickCount64()-lastAimUpdate<=150){
         float x{},y{},ex{},ey{},scale=hudPixelScale();
@@ -975,12 +1009,15 @@ void present(){
     yaw+=std::remainder(desiredYaw-yaw,360.f)*(1-std::exp(-12.f*frameDt));
     if(!gameplay){lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;}
     ++frames;void* renderer=global(0x11F4748);if(!renderer)return;auto device=at<IDirect3DDevice9*>(renderer,0x288);if(!device)return;
+    renderer_bridge::probe(device);
+    if(!gameplay)renderer_bridge::suspend();
     // Cutaway remains disabled pending visibility regression diagnosis.
     overlay::PresentationSurface surface(device);if(!surface)return;
     float nextWidth=float(surface.desc.Width),nextHeight=float(surface.desc.Height);
     if(width!=nextWidth||height!=nextHeight){auto c=resizeCursor({cursorX,cursorY},width,height,nextWidth,nextHeight);cursorX=c.x;cursorY=c.y;actionBoxes.clear();closeContext();}
     width=nextWidth;height=nextHeight;
     overlayCamera=presentationCamera(renderCamera,renderTargetWidth,renderTargetHeight,width,height);
+    if(bridgeImageVisible)overlayCamera=presentationCamera(bridgeVisibleCamera.camera,bridgeVisibleCamera.width,bridgeVisibleCamera.height,width,height);
     if(active()){
         destinationMarker(device);
         float scale=hudPixelScale();LONG stroke=std::max(1L,LONG(std::lround(scale)));
@@ -988,7 +1025,7 @@ void present(){
             std::array<D3DRECT,24> marks{};DWORD count=0;
             for(int i=0;i<24;i++){float a=i*6.2831853f/24;LONG x=LONG(sx+std::cos(a)*16*scale),y=LONG(sy+std::sin(a)*16*scale);
                 if(x>=1&&y>=1&&x<LONG(width)-2&&y<LONG(height)-2)marks[count++]={std::max(0L,x-stroke),std::max(0L,y-stroke),std::min(LONG(width),x+stroke+1),std::min(LONG(height),y+stroke+1)};}
-            if(count)device->Clear(count,marks.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+            if(count)overlay::clearRects(device,count,marks.data(),hudColour());
         }}
         // D3D9 Clear rects work outside BeginScene and do not alter shader state.
         auto rect=[&](float l,float t,float r,float b){return D3DRECT{std::clamp(LONG(cursorX+l*scale),0L,LONG(width)),std::clamp(LONG(cursorY+t*scale),0L,LONG(height)),std::clamp(LONG(cursorX+r*scale),0L,LONG(width)),std::clamp(LONG(cursorY+b*scale),0L,LONG(height))};};
@@ -996,7 +1033,7 @@ void present(){
         auto add=[&](D3DRECT r){if(r.x2>r.x1&&r.y2>r.y1)cursorRects[count++]=r;};
         if(altAiming){add(rect(-10,-1,-3,2));add(rect(4,-1,11,2));add(rect(-1,-10,2,-3));add(rect(-1,4,2,11));}
         else for(int i=0;i<12;i++)add(rect(0,float(i),1.f+float(i/2),float(i+1)));
-        if(count)device->Clear(count,cursorRects.data(),D3DCLEAR_TARGET,hudColour(),1,0);
+        if(count)overlay::clearRects(device,count,cursorRects.data(),hudColour());
         displayCamera=overlayCamera;
     }
     drawWorldUI(device);
@@ -1006,6 +1043,7 @@ void saveSettings(bool force){
     static std::string previous;static uint64_t lastSave{};
     auto now=GetTickCount64();if(!force&&now-lastSave<1000)return;lastSave=now;
     std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<desiredPitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\nrotation_speed="<<rotationSpeed<<"\naim_line="<<(showAimLine?1:0)<<"\ndamage_numbers="<<(showDamageNumbers?1:0)<<"\nauto_ads="<<(automaticADS?1:0)<<"\n";
+    text<<"[experimental]\nrtx_remix="<<rtxMode<<"\n";
     if(text.str()==previous)return;
     {std::ofstream file(bridge+"/settings.tmp");file<<text.str();if(!file)return;}
     if(MoveFileExA((bridge+"/settings.tmp").c_str(),(bridge+"/settings.ini").c_str(),MOVEFILE_REPLACE_EXISTING))previous=text.str();
@@ -1020,6 +1058,7 @@ void loadSettings(){
     distance=read("distance",1100,200,4000);span=read("span",1500,300,5000);
     orthographic=GetPrivateProfileIntA("camera","orthographic",1,file.c_str())!=0;
     rotationSpeed=read("rotation_speed",.35f,.1f,1.f);showAimLine=GetPrivateProfileIntA("camera","aim_line",1,file.c_str())!=0;showDamageNumbers=GetPrivateProfileIntA("camera","damage_numbers",1,file.c_str())!=0;automaticADS=GetPrivateProfileIntA("camera","auto_ads",1,file.c_str())!=0;
+    rtxMode=std::clamp(int(GetPrivateProfileIntA("experimental","rtx_remix",0,file.c_str())),0,2);char session[8]{};GetEnvironmentVariableA("MOJAVE_RTX_MODE",session,8);rtxSessionMode=std::clamp(atoi(session),0,2);
     autoEnable=GetPrivateProfileIntA("startup","auto_enable",1,file.c_str())!=0;requested=autoEnable;
 }
 void onMessage(Message* m){
@@ -1033,7 +1072,7 @@ void onMessage(Message* m){
     case 8:worldCameraArmed=m->data!=nullptr;log(worldCameraArmed?"Camera armed after successful load":"Camera disarmed after failed load");break;
     case 14:resetContext();requested=autoEnable;worldCameraArmed=true;log("Camera armed at NewGame");break;
     case 19:expressions.clear();break; // ClearScriptDataCache
-    case 1:case 7:updateLighting(false);saveSettings();break; // Exit
+    case 1:case 7:renderer_bridge::shutdown();rtxReleaseKey();updateLighting(false);saveSettings();break; // Exit
     case 20:{static uint64_t previousTick{};auto now=GetTickCount64();if(previousTick&&now-previousTick>500)stop();previousTick=now;
         if(pendingActivation&&fadeAlpha>=.99f&&now-activationStarted>=250){
             auto ref=reference(interactionId);pendingActivation=false;interactionId=0;fadeHoldUntil=now+250;
@@ -1054,7 +1093,7 @@ void onMessage(Message* m){
         // Render hooks can own the first loaded camera before this main-loop setup.
         // Dialogue is a valid startup state, but its movement controls stay native.
         if(startupCameraReady()&&(gameMode()||dialogue()))setEnabled(true);
-        if(enabled)useNativePipboy(true);updatePipboyHands(enabled&&pipboyMode()!=0);updateDamageNumbers();updateReticle(active());poll();input();sampleWorld();nativeInteraction();updateContext();saveSettings();break;} // MainGameLoop
+        if(enabled)useNativePipboy(true);updatePipboyHands(enabled&&pipboyMode()!=0);updateDamageNumbers();updateReticle(active());poll();input();sampleWorld();nativeInteraction();updateContext();rtxTick();saveSettings();break;} // MainGameLoop
     case 24:present();break; // OnFramePresent
     }
 }
@@ -1066,6 +1105,8 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* api,
 extern "C" __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* api){
     root=std::string(api->GetRuntimeDirectory())+"IsometricModdingTool";bridge=root+"/runtime";
     CreateDirectoryA(root.c_str(),nullptr);CreateDirectoryA(bridge.c_str(),nullptr);loadSettings();
+    renderer_bridge::install(root);
+    installInterfaceBridge();
     lastSequence=GetPrivateProfileIntA("command","sequence",0,(bridge+"/command.ini").c_str());
     console=static_cast<Console*>(api->QueryInterface(1));scripts=static_cast<Scripts*>(api->QueryInterface(6));
     auto messages=static_cast<Messaging*>(api->QueryInterface(2));
