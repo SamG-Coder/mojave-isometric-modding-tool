@@ -41,7 +41,7 @@ Exit the game before installing or replacing the DLL. The install command copies
 2. Load a character. Isometric mode now enables automatically once the world is ready. **F8** toggles it for the current session.
 3. Adjust camera orbit, angle and distance. Enable the experimental orthographic projection if desired.
 
-**Left click** walks toward a ground point. **Right click** stops. **Mouse wheel** zooms. Hold **middle mouse** and drag horizontally to orbit (yaw), vertically to tilt (pitch); **[ / ]** also rotate. **F8** restores the regular camera and controls owned by the plugin. The pointer and destination ring use the configured HUD colour. The centre crosshair is hidden while the mod owns gameplay.
+**Left click** walks toward a ground point. **Right click** opens a context menu at the picked object or ground point (and stops the current order). **Mouse wheel** zooms. Hold **middle mouse** and drag horizontally to orbit (yaw), vertically to tilt (pitch); **[ / ]** also rotate. **F8** restores the regular camera and controls owned by the plugin. The pointer and destination ring use the configured HUD colour. The centre crosshair is hidden while the mod owns gameplay.
 
 Tool commands are applied when the game resumes processing its main loop after returning focus. Frame previews are snapshots: capture again after moving before clicking a preview to send a destination.
 
@@ -82,8 +82,27 @@ Open the normal Settings menu from the title screen or the Esc pause menu. Displ
 
 The **Isometric** category is another native Settings entry. It exposes projection, zoom span, pitch, middle-mouse rotation speed, Alt aim line, damage numbers, automatic distant aiming and automatic activation after loading. Use Apply to update these immediately and persist them.
 
+The red cross on the Alt aim line warns of an obstruction but does not prevent ranged attacks. Click to fire anyway once in range; native projectile collision still determines what is hit. Ranged pursuit closes the distance without requiring a clear firing lane. Melee retains its obstruction and reach checks.
+
 The menu uses the game's native list and toggle templates, including its arrows, scrolling, fonts and interface colours. It does not require an overlay menu or replacement menu XML. The options column is widened to accommodate longer graphics values.
 
 Steam Play through MojaveIsoLaunch applies queued display settings before xNVSE starts. Only recognized preference fields are copied into FalloutPrefs.ini. The launcher backs up the original under `backups/Display-*.ini`, preserves unrelated preferences, and keeps pending changes if applying them fails. The menu validates fullscreen resolutions and MSAA support against the selected Direct3D adapter before saving.
 
 Screen picking and indicators use final back-buffer pixels, with explicit mapping from the world-render viewport. Mouse pointer speed and indicator sizes scale with output height; middle-mouse camera rotation keeps its angular sensitivity. Native interaction labels and their click areas share the UI coordinate conversion. Diagnostics now include `world_surface`, `world_viewport` and `display_viewport` for resolution-related reports.
+
+While the orthographic camera is active, light, shadow and specular fade distances expand to cover its ground footprint plus the camera offset and a small margin. Coverage follows zoom, pitch and aspect ratio. This uses the engine's runtime fade caches and does not change FalloutPrefs.ini or force disabled shadow features on. Native distances return when the mod camera is disabled or hands off to the Pip-Boy; in-game Display changes are preserved. A wider lit/shadowed area can increase GPU cost. This does not raise shadow-count limits or load distant world cells.
+
+### Right-click context menu
+
+The context menu uses native HUD tiles, the current HUD font/colour/zoom and a native menu background texture. It sits beside the click and stays inside the screen using native UI coordinates.
+
+- Living actors: Talk/Interact, Attack, Open VATS, Walk here, Stop and Cancel.
+- Dead actors: Search, Walk here, Stop and Cancel.
+- Doors and containers: Open / close or Open, followed by movement and cancellation actions.
+- Furniture, terminals and activators: Sit / use or Use. The engine selects the actual furniture or scripted interaction.
+- Loose inventory objects: Take. Plants: Harvest.
+- Ground and scenery: Move/Walk here, Stop and Cancel.
+
+Left-click a row to select it. Outside clicks and a second right-click dismiss the menu without sending a world click. Escape also dismisses it while retaining the native pause-menu behavior. Middle-mouse rotation dismisses it; wheel zoom is held while it is open. Native menus, loss of focus, resolution changes, save loads and an unavailable target dismiss it. The world is not paused.
+
+Activation walks into reach and uses the existing native activation flow, retaining locks, ownership, dialogue choices and scripted behavior. Open VATS hands off to the game's regular VATS control; it does not force the selected target or bypass VATS eligibility. The menu exposes supported actions by object type, not an enumeration of arbitrary mod-script commands.

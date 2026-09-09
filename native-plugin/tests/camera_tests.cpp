@@ -64,6 +64,22 @@ int main(){
         auto extent=ui.toPixels({300,30});check(std::abs(extent.x/output.x-300/1706.6666f)<.0001f,"Prompt hitbox uses fixed pixels");
         auto resized=resizeCursor({960,270},1920,1080,output.x,output.y);check(std::abs(resized.x-output.x*.5f)<.01f&&std::abs(resized.y-output.y*.25f)<.01f,"Resolution change shifts cursor target");
     }
+    for(auto output:{ScreenPoint{1024,768},ScreenPoint{1280,720},ScreenPoint{1920,1080},ScreenPoint{2560,1440},ScreenPoint{3440,1440},ScreenPoint{3840,2160}}){
+        for(float menuHeight:{720.f,960.f,1200.f}){
+            auto extent=nativeMenuExtent(output.x,output.y,menuHeight/output.y);
+            check(std::abs(extent.y-menuHeight)<.001f,"Native menu converter ignored");
+            UITransform ui{output.x,output.y,extent.x,extent.y};
+            auto label=ui.damagePosition({output.x*.5f,output.y*.5f},160,1.f);
+            auto centre=ui.toPixels({label.x+80,label.y});
+            check(std::abs(centre.x-output.x*.5f)<.01f,"Damage label no longer centred");
+            check(std::abs(centre.y-(output.y*.5f-(24.f+128.f/3.f)*output.y/menuHeight))<.01f,"Damage rise scales differently from text");
+            check(std::abs(ui.hudPixelScale()*720.f-output.y*960.f/menuHeight)<.01f,"Overlay ignores native HUD scale");
+            auto box=ui.toPixels({300,30});
+            check(std::abs(box.x-300*output.y/menuHeight)<.01f,"Ultrawide stretches prompt width");
+        }
+    }
+    check(nativeMenuExtent(2560,1440,0).x==0,"Uninitialized converter treated as pixel UI");
+    check(nativeMenuExtent(2560,1440,NAN).x==0,"Invalid converter accepted");
     check(!presentationCamera(c,0,720,2560,1440).valid,"Unknown render surface accepted");
     std::cout<<"Resolution, intermediate surface, letterbox, UI hitbox and resize checks passed.\n";
     std::cout<<tests<<" camera round trips passed across pitch, yaw, projection and viewport offsets.\n";

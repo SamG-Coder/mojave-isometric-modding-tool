@@ -252,3 +252,40 @@ Melee now waits until facing within 25 degrees and until an existing native atta
 - Inspected the installed game's original start_menu.xml: lb_toggle_value takes its position from StartMenu._center_x. The custom Isometric category opens through native category zero, which leaves that value at zero. Native user4 is arrow spacing, not a value box width.
 - Set a shared value-column position and derive safe separation/arrow spacing from the native rendered label and value widths. Recheck after native text layout and value changes; update traits only when dimensions change. Resolve current list membership before reading tiles so closing/rebuilding menus cannot reuse stale tile pointers.
 - Win32 Release build passed. Visual verification of the revised page remains for the next game session.
+
+## Isometric lighting-distance correction
+
+- Inspected native setting definitions and live x86 references. Initialization at 0x4DBCFD onward and native Display callbacks populate renderer light caches 0x11F9444/48, shadow caches 0x11F944C/50 and specular caches 0x11F9454/58. Runtime shader fading reads these caches (including 0xB9EC19 and 0xB9ED54), so changing only INI objects would not reliably update current rendering.
+- Added finite view-coverage calculation from actual camera-to-player distance, span, aspect ratio and pitch. Override start is never below configured start; native fade width is retained. No INI values or shadow enable flags are modified.
+- Runtime ownership detects native menu/external cache changes, avoids compounded scaling, and restores the last underlying values when leaving the isometric camera, opening Pip-Boy, disabling the mod, loading/reverting, or exiting.
+- Win32 Release build and new lighting tests passed: all ground corners across 27 span/pitch/aspect combinations, 1000 repeated updates without growth, zoom-in reduction, normal-camera restoration, settings edits and external changes.
+- Pending DLL staged for the next Steam launch. Visual verification at the user's affected location remains outstanding.
+
+## Allow ranged attacks with an obstructed aim trace
+
+- Removed the obstruction veto from ranged engagement and fire submission. In-range targets now stop pursuit and proceed through normal native aim/weapon readiness even when the trace reports blocked. Ranged approach candidates no longer require a clear trace; melee retains this requirement.
+- The red aim-line cross remains advisory. No projectile collision, damage, accuracy, ammunition or reload handling was bypassed.
+- Win32 Release plugin and combat tests passed, including blocked ranged engagement/firing, retained melee obstruction checks, and range/movement/menu/dead-target gates. Updated DLL installed while the game was closed, with an original DLL backup and matching SHA256 for build, installed and pending copies. Live firing through the reported red-cross case remains to be verified in game.
+
+## Load/new-game camera ownership
+
+- Verified xNVSE LoadGame, PostLoadGame and NewGame event timing and PostLoadGame's boolean encoded in the data pointer against the local upstream PluginAPI.h and Serialization.cpp.
+- Removed the 750 ms ordinary-gameplay startup requirement. LoadGame and NewGame now arm camera ownership as soon as a valid player, cell and scene node exist; render hooks can apply the isometric transform/projection before main-loop control initialization. Dialogue is allowed during that initialization, with movement controls left native while it is open.
+- Native POV guards no longer wait for the dialogue menu flag, closing the entry gap before the menu exists. Pip-Boy and seated state remain exceptions. Preload/title transitions disarm startup ownership; failed PostLoadGame does not arm it.
+- Release plugin build, combat/startup regression tests and diff whitespace check passed. Updated DLL installed with a backup while FalloutNV was closed; build, installed and staged hashes match. A live load/spawn that immediately starts dialogue remains to be checked.
+
+## Native HUD resolution scaling
+
+- Original HUDMainMenu XML does not require root width/height. Removed tile-ancestor size guessing and its pixel-sized fallback. Native menu extents now use the engine's pixels-to-menu converter at 0x11D8A48, matching the native cursor coordinate conversion documented in local JIP source.
+- Damage labels use native menu units for centring, clearance and rise, and read their actual wrap width instead of assuming a fixed half-width. Damage and interaction text copy the native HUD font, colour and available zoom trait. Interaction placement and hitboxes share the same converter. Cursor, aim indicators, destination marker and attack ring use the corresponding native HUD scale.
+- Release plugin build and camera tests passed: 1176 existing camera round trips plus damage centring/rise, marker scale and unstretched prompt extents at 1024x768, 1280x720, 1920x1080, 2560x1440, 3440x1440 and 3840x2160 across three native menu heights. Invalid converters are rejected. These are coordinate tests, not visual font-rendering verification.
+- Installed with a DLL backup while the game was closed; installed, built and pending hashes match. Visual confirmation of damage text and prompts at the user's resolution remains outstanding.
+
+## Native right-click context menu
+
+- Added a native TileRect/TileText menu with the installed game's fuzzy menu background, native HUD typography/colour/zoom, highlighted rows and a named target heading. XML references the game's texture; no game asset is redistributed.
+- Right-click retains a form ID and cell ID. Dispatch resolves the current reference again, rechecks availability, and uses existing activation, pathing and combat flows. Dead/alive actor actions refresh while open. Native VATS is requested through verified control 16.
+- Menu input consumes clicks before world movement/attack handling; closes on native menus, outside/right clicks, Escape, rotation, focus loss, resolution changes, loads and unavailable targets. Load events clear cached menu tile pointers. Opening stops the current order without pausing the world.
+- Added inventory pickup and plant activation to the existing whitelist; native activation handles scripts, ownership and locks. Full-name component offsets for supported forms were checked against local JIP's component table.
+- Release plugin, context and combat tests passed. Context tests cover action selection, corpses, furniture/pickups, ground/scenery, screen-corner placement and every row hitbox across four resolutions and three UI scales. XML parsed successfully with the game's HUD colour entity substituted for the parser. Native in-game appearance and dispatch have not yet been live verified.
+- DLL and context.xml installed while FalloutNV was closed, with a previous DLL backup. Build/installed hashes match; pending DLL synchronized for Steam startup.

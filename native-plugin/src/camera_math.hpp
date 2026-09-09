@@ -76,10 +76,21 @@ inline ScreenPoint resizeCursor(ScreenPoint p,float oldWidth,float oldHeight,flo
     auto clamp=[](float v,float maximum){return std::fmax(0.f,std::fmin(v,maximum-1));};
     return {clamp(oldWidth>0?p.x*newWidth/oldWidth:newWidth*.5f,newWidth),clamp(oldHeight>0?p.y*newHeight/oldHeight:newHeight*.5f,newHeight)};
 }
+// The engine converter maps final screen pixels into native menu coordinates.
+// HUD root width/height are optional and must not define this coordinate space.
+inline ScreenPoint nativeMenuExtent(float width,float height,float converter){
+ if(!std::isfinite(width)||!std::isfinite(height)||width<=0||height<=0)return {};
+ if(!std::isfinite(converter)||converter<=0)return {};
+ return {width*converter,height*converter};
+}
 struct UITransform {
     float pixelsWidth,pixelsHeight,uiWidth,uiHeight;
     ScreenPoint toUI(ScreenPoint p)const{return {p.x*uiWidth/pixelsWidth,p.y*uiHeight/pixelsHeight};}
     ScreenPoint toPixels(ScreenPoint p)const{return {p.x*pixelsWidth/uiWidth,p.y*pixelsHeight/uiHeight};}
+    float hudPixelScale()const{return pixelsHeight/uiHeight*(960.f/720.f);}
+    ScreenPoint damagePosition(ScreenPoint anchor,float wrapWidth,float age)const{
+        auto p=toUI(anchor);return {p.x-wrapWidth*.5f,p.y-24.f-age*(128.f/3.f)};
+    }
 };
 
 }

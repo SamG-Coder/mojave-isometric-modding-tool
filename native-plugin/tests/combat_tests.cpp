@@ -9,19 +9,27 @@ int main(){
  auto east=combat::aim({0,0,0},{100,0,0});check(std::abs(east.yaw-1.5707963f)<.001f,"East heading incorrect");
  check(combat::aim({0,0,0},{0,100,100}).pitch<0,"Upward aim has wrong pitch sign");
  check(combat::aim({0,0,0},{0,100,-100}).pitch>0,"Downward aim has wrong pitch sign");
- check(combat::canAttack(100,200,true,false,true,true),"Clear in-range attack rejected");
- check(!combat::canAttack(300,200,true,false,true,true),"Out-of-range attack accepted");
- check(!combat::canAttack(100,200,false,false,true,true),"Blocked shot accepted");
- check(!combat::canAttack(100,200,true,true,true,true),"Moving attack accepted");
- check(!combat::canAttack(100,200,true,false,false,true),"Menu attack accepted");
- check(!combat::canAttack(100,200,true,false,true,false),"Dead target attack accepted");
+ check(combat::canAttack(100,200,true,false,true,true,false),"Clear in-range attack rejected");
+ check(!combat::canAttack(300,200,true,false,true,true,false),"Out-of-range attack accepted");
+ check(combat::canAttack(100,200,false,false,true,true,false),"Obstructed ranged shot rejected");
+ check(!combat::canAttack(100,200,true,true,true,true,false),"Moving attack accepted");
+ check(!combat::canAttack(100,200,true,false,false,true,false),"Menu attack accepted");
+ check(!combat::canAttack(100,200,true,false,true,false,false),"Dead target attack accepted");
+ // Obstruction never overrides other ranged safety gates; melee retains reach checks.
+ check(!combat::canAttack(100,200,false,false,true,true,true),"Obstructed melee accepted");
+ check(!combat::canEngage(100,200,false,true,true,true),"Obstructed melee stopped pursuit");
+ check(combat::canAttack(100,200,true,false,true,true,true),"Clear melee rejected");
+ check(!combat::canAttack(300,200,false,false,true,true,false),"Blocked out-of-range shot accepted");
+ check(!combat::canAttack(100,200,false,true,true,true,false),"Blocked shot bypassed movement gate");
+ check(!combat::canAttack(100,200,false,false,false,true,false),"Blocked shot bypassed menu gate");
+ check(!combat::canAttack(100,200,false,false,true,false,false),"Blocked shot bypassed dead-target gate");
  auto muzzleAim=combat::aim({20,0,70},{100,100,70});
  check(std::abs(muzzleAim.pitch)<.001f,"Level muzzle-to-torso shot aims vertically");
  check(std::abs(muzzleAim.yaw-std::atan2(80.f,100.f))<.001f,"Muzzle lateral offset ignored");
  auto crouched=combat::aim({20,0,70},{100,100,40});check(crouched.pitch>0,"Lower torso target not tracked");
  // Engagement is decided before movement is stopped, independent of a pending route.
- check(combat::canEngage(199,200,true,true,true),"In-range chase did not yield to attack");
- check(!combat::canEngage(199,200,false,true,true),"Chase fired through obstruction");
+ check(combat::canEngage(199,200,true,true,true,false),"In-range chase did not yield to attack");
+ check(combat::canEngage(199,200,false,true,true,false),"Obstructed in-range target kept chasing");
  check(combat::refreshPursuit(100,0,0,1000,true,true),"First approach waited for timer");
  check(!combat::refreshPursuit(1249,1000,500,1000,true,true),"Moving target bypassed bounded update rate");
  check(combat::refreshPursuit(1250,1000,100,1000,true,true),"Stale pending route prevented pursuit update");
@@ -34,6 +42,13 @@ int main(){
  check(!combat::useAimDownSights(300,false,true),"Close ranged attack retained sights");
  check(combat::useAimDownSights(450,false,true)&&!combat::useAimDownSights(450,false,false),"Aim threshold oscillates");
  check(!combat::useAimDownSights(600,true,true),"Melee activated aim/block control");
+ // Load/new-game ownership is available before gameplay or dialogue polling.
+ check(combat::startupCameraReady(true,false,true,true,true),"Loaded startup camera not armed");
+ check(!combat::startupCameraReady(true,false,true,false,true),"Preload/title/failed-load camera armed");
+ check(!combat::startupCameraReady(true,false,true,true,false),"Missing loaded player camera armed");
+ check(!combat::startupCameraReady(false,false,true,true,true),"Disabled auto-start acquired camera");
+ check(!combat::startupCameraReady(true,true,true,true,true),"Enabled camera repeated startup");
+ check(!combat::startupCameraReady(true,false,false,true,true),"Missing hooks acquired camera");
  // Menu, dialogue, furniture and native POV are deliberately not ownership inputs.
  check(combat::keepCamera(true,true,false),"Loaded world lost camera ownership");
  check(!combat::keepCamera(true,false,false),"Missing world retained camera");

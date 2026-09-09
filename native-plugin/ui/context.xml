@@ -1,0 +1,12 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only; Copyright 2026 SamGCoder -->
+<rect name="MojaveIsoContext">
+ <visible>0</visible><locus>1</locus><x>0</x><y>0</y><depth>8</depth><width>300</width><height>250</height>
+ <image name="Background"><filename>Interface\Shared\Background\fuzzy.dds</filename><x>0</x><y>0</y><width>300</width><height>250</height><red>0</red><green>0</green><blue>0</blue><alpha>235</alpha><depth>0</depth></image>
+ <text name="Title"><x>12</x><y>8</y><depth>2</depth><font>3</font><string>Actions</string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row0"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row1"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row2"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row3"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row4"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row5"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+</rect>

@@ -40,3 +40,9 @@ target_compile_features(MojaveIsoDamageTests PRIVATE cxx_std_20)
 add_executable(MojaveIsoDisplayTests tests/display_settings_tests.cpp)
 target_compile_features(MojaveIsoDisplayTests PRIVATE cxx_std_20)
 target_link_libraries(MojaveIsoDisplayTests PRIVATE shell32 ole32 uuid)
+
+add_executable(MojaveIsoLightingTests tests/lighting_distance_tests.cpp)
+target_compile_features(MojaveIsoLightingTests PRIVATE cxx_std_20)
+
+add_executable(MojaveIsoContextTests tests/context_menu_tests.cpp)
+target_compile_features(MojaveIsoContextTests PRIVATE cxx_std_20)

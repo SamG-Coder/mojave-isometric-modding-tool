@@ -2,6 +2,7 @@
 // Copyright (c) 2026 SamGCoder (original contributions).
 // See THIRD_PARTY_NOTICES.md for upstream attribution.
 #pragma once
+#include "context_menu_model.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <cmath>
@@ -59,7 +60,7 @@ inline bool interactable(void* ref){
     auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
     auto base=at<void*>(ref,0x20);if(!base)return false;
     auto kind=at<uint8_t>(base,4);
-    return kind==0x27||kind==0x1C||kind==0x1B||kind==0x2A||kind==0x2B||kind==0x15||kind==0x16||kind==0x17;
+    return context_menu::activatable(kind);
 }
 inline bool activate(void* ref){return reinterpret_cast<bool(__thiscall*)(void*,void*,uint32_t,uint32_t,uint32_t)>(0x573170)(ref,player(),0,0,1);}
 
