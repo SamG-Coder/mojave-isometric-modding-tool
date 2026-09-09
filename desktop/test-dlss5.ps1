@@ -10,7 +10,7 @@ foreach ($name in @('nvngx_dlss.dll','nvngx_dlssnr.dll')) {
   throw "NVIDIA signature verification failed for $name. Test not started."
  }
 }
-$helper=Join-Path $RuntimePath 'dlss5-feed-host64.exe'
+$helper=Join-Path $RuntimePath 'MojaveIsoNeuralHost.exe'
 if (!(Test-Path -LiteralPath $helper)) { throw 'DLSS5-Feeder host is not provisioned.' }
 $log=Join-Path $RuntimePath 'dlss5-feed-host.log'
 $neural=Join-Path $RuntimePath 'ReShade.log'

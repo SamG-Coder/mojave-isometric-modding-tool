@@ -7,8 +7,12 @@ using namespace context_menu;
 void check(bool ok,const char* message){if(!ok){std::cerr<<message<<"\n";std::exit(1);}}
 bool has(const std::vector<Row>& rows,Action a){for(auto& r:rows)if(r.action==a)return true;return false;}
 int main(){
- auto living=actions(0x2A,false,true,true);check(living.size()==5&&living[0].label=="Talk"&&has(living,Action::Attack)&&has(living,Action::Vats),"Living actor actions incorrect");
+ auto living=actions(0x2A,false,true,true);check(living.size()==6&&living[0].label=="Talk"&&has(living,Action::Attack)&&has(living,Action::Vats),"Living actor actions incorrect");
  for(auto& row:living)check(row.label!="Stop","Redundant Stop option remains");
+ check(has(actions(0,false,false,false),Action::PickupArea),"Ground has no area pickup action");
+ check(inPickupArea({100,0,0},{0,0,0},{0,0,0}),"Nearby pickup omitted");
+ check(!inPickupArea({100,0,180},{0,0,0},{0,0,0}),"Other floor included");
+ check(!inPickupArea({300,0,0},{0,0,0},{0,0,0}),"Outside pickup radius included");
  auto small=layout({100,100},{1706,960},5,24,150),large=layout({100,100},{1706,960},5,52,620);
  check(large.width>=652&&large.width>small.width,"Backdrop does not expand for wider text");
  check(large.height()>small.height()&&large.rowHeight>=60,"Backdrop does not expand for taller text");

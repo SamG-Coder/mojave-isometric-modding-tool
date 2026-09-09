@@ -2,14 +2,15 @@
 # Copyright 2026 SamGCoder
 param([string]$Root=(Split-Path $PSScriptRoot -Parent),[string]$Cache,[switch]$SkipTest)
 $ErrorActionPreference='Stop'
-if(Get-Process FalloutNV,dlss5-feed-host64 -ErrorAction SilentlyContinue){throw 'Close New Vegas and the DLSS helper before provisioning.'}
+if(Get-Process FalloutNV,dlss5-feed-host64,MojaveIsoNeuralHost -ErrorAction SilentlyContinue){throw 'Close New Vegas and the DLSS helper before provisioning.'}
+$nativeHost=Join-Path $Root 'build/host64/Release/MojaveIsoNeuralHost.exe'
+if(!(Test-Path -LiteralPath $nativeHost)){throw 'Build native-host for x64 with NGX_SDK first; see native-host/README.md.'}
 if(!$Cache){$Cache=Join-Path $Root 'runtime/dlss5/downloads'}
 $target=Join-Path $Root 'runtime/dlss5/candidate/host64'
 $stage=Join-Path $Root ('runtime/dlss5/staging-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $Cache,$stage,$target | Out-Null
 Add-Type -AssemblyName System.IO.Compression
 $pieces=@(
- @{name='feeder';url='https://github.com/jlrouzies-fr/DLSS5-Feeder/releases/download/v0.15.1/DLSS5-Feeder-0.15.1.zip';archive='2e44e81e691e75e532b9b7babc278a12615cb7f0fd9ef854da50e6ef17b272f4';entry='dlss5-feed-host64.exe';output='dlss5-feed-host64.exe';hash='034e6cdf382e6ea9164afd63c5b8a8aa0312894cb342593bc933e9fa435f8d02'},
  @{name='reshade';url='https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe';archive='afe4c8f13048306307983b8b3d41d5bf00a86820440b0e57dea10950e1176445';entry='ReShade64.dll';output='dxgi.dll';hash='0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7'},
  @{name='renodx';url='https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.5/renodx-dlss5_4.5.zip';archive='c6626cf227b07b31d417f45c43f072d754b8a85fd63ed8761ca817823fc539ca';entry='renodx-dlss5.addon64';output='renodx-dlss5.addon64';hash='e1c28fde0922b12fc10734e58c3d24a36808e575247f4fd4f36226540d7ee023'},
  @{name='dlss';url='https://github.com/RankFTW/rhi-repo/releases/download/dlss-310.9.1/nvngx_dlss_310.9.1.zip';archive='aaba83b288bd145c3808e8d7a0ba03cc8c8676d18ad984b1bfa6563046a3ba37';entry='nvngx_dlss.dll';output='nvngx_dlss.dll';hash='3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'},
@@ -42,6 +43,7 @@ foreach($piece in $pieces){
  if((Test-Path -LiteralPath $path) -and (Get-FileHash -LiteralPath $path).Hash-ne $piece.hash){Copy-Item -LiteralPath $path -Destination ($path+'.'+[guid]::NewGuid().ToString('N')+'.backup')}
  Copy-Item -LiteralPath (Join-Path $stage $piece.output) -Destination $path -Force
 }
+Copy-Item -LiteralPath $nativeHost -Destination (Join-Path $target 'MojaveIsoNeuralHost.exe') -Force
 $ini=Join-Path $target 'ReShade.ini'
 if(!(Test-Path -LiteralPath $ini)){"[GENERAL]`r`nEffectSearchPaths=.\`r`nTextureSearchPaths=.\`r`n" | Set-Content -LiteralPath $ini -Encoding ASCII}
 $pieces | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $Root 'runtime/dlss5/components.json') -Encoding UTF8

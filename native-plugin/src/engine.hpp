@@ -20,7 +20,7 @@ inline void movement(uint16_t flags){
     void* p=player();if(!p)return;void* mover=at<void*>(p,0x190);if(!mover)return;
     auto vt=*reinterpret_cast<void***>(mover);
     if(flags)reinterpret_cast<void(__thiscall*)(void*,uint16_t)>(vt[3])(mover,flags);
-    else reinterpret_cast<void(__thiscall*)(void*)>(vt[4])(mover);
+    else reinterpret_cast<void(__thiscall*)(void*,uint32_t)>(vt[2])(mover,0xFu); // Clear directional flags only.
 }
 // TES::RayCast uses aligned Havok data and returns a NiAVObject, not a form.
 // The hit fraction also handles landscape hits where the object can be null.
@@ -56,11 +56,22 @@ inline void* reference(uint32_t id){
     return nullptr;
 }
 inline bool interactable(void* ref){
-    if(!ref||ref==player())return false;
+    if(!ref||ref==player()||(at<uint32_t>(ref,8)&0x822))return false;
     auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
     auto base=at<void*>(ref,0x20);if(!base)return false;
     auto kind=at<uint8_t>(base,4);
     return context_menu::activatable(kind);
+}
+inline bool areaPickup(void* ref){
+    if(!interactable(ref))return false;
+    auto base=at<void*>(ref,0x20);auto kind=at<uint8_t>(base,4);
+    // Vanilla edible plants use scripted ACTI records, not FLOR records.
+    // Preserve their original activation scripts, including quest collection.
+    bool harvest=false;
+    if(kind==0x15){auto prompt=at<const char*>(base,0x88);auto size=at<uint16_t>(base,0x8C);
+        harvest=prompt&&size<512&&size>5&&(_strnicmp(prompt,"Pick ",5)==0||_strnicmp(prompt,"Harvest ",8)==0);
+    }
+    return context_menu::pickup(kind)||kind==0x26||harvest;
 }
 inline bool activate(void* ref){return reinterpret_cast<bool(__thiscall*)(void*,void*,uint32_t,uint32_t,uint32_t)>(0x573170)(ref,player(),0,0,1);}
 

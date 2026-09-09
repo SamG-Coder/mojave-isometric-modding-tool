@@ -4,7 +4,13 @@ By **SamGCoder**. A Windows desktop tool and native C++ plugin for experimenting
 
 The native plugin controls engine camera transforms and renderer projection, performs collision picking, steers the player toward a clicked ground point, and captures the active D3D9 render target. The desktop tool provides camera controls, frame previews and diagnostics.
 
-## Requirements and setup
+## Prebuilt alpha release
+
+Download the install ZIP from [GitHub Releases](https://github.com/SamG-Coder/mojave-isometric-modding-tool/releases). Close the game, then extract the ZIP into the Fallout: New Vegas folder containing FalloutNV.exe. The package includes the plugin, native UI files, launcher and corresponding source. Install xNVSE separately. Read RELEASE-INSTALL.txt inside the package for Steam launch options.
+
+DLSS and RTX Remix are parked: their controls are hidden and saved activation settings are ignored. No experimental renderer runtimes, private shaders, game assets or personal settings are included.
+
+## Requirements and setup (building from source)
 
 - Fallout: New Vegas runtime **1.4.0.525** (normal runtime ABI). Tested on Steam; other distributions have not been validated.
 - [xNVSE](https://github.com/xNVSE/NVSE/releases), installed according to its instructions. Tested with 6.4.8.
@@ -56,7 +62,9 @@ Tool commands are applied when the game resumes processing its main loop after r
 
 ## Current limits
 
-Movement steers directly toward a collision hit. Door/NPC/container collision picking and walk-to-activate are implemented as experimental groundwork and need further validation. Navmesh routing around obstacles, combat conversion, and roof/wall cutaways are not implemented. Interiors, dialogue, scripted cameras, VATS, distant terrain culling and compatibility with other camera mods need more testing. The renderer is hooked; it is not a replacement renderer or a full renderer editor.
+Native navmesh routing with a grid fallback, walk-to-activate, live combat orders, VATS handoff, native settings, and area pickup are implemented. This remains an alpha conversion. Interiors, dialogue, scripted cameras, melee animations and compatibility with other mods need further playtesting. Roof/wall cutaways are currently disabled. The newest dialogue visibility and scripted wake-up changes have automated coverage but have not yet been verified in a live session.
+
+Right-click **Pickup Area** to list loose items and harvestable plants around the clicked location, with individual pickup and Take all. This uses native-styled UI tiles; it is not the actual container inventory menu. Items are collected through their original activation scripts after walking into reach. See [playtest notes](desktop/PLAYTEST-FIXES.md) for range limits and details.
 
 See [VERIFICATION.md](VERIFICATION.md) for observed in-game results and the boundaries of testing.
 
@@ -107,20 +115,6 @@ Left-click a row to select it. Outside clicks and a second right-click dismiss t
 
 Activation walks into reach and uses the existing native activation flow, retaining locks, ownership, dialogue choices and scripted behavior. Open VATS hands off to the game's regular VATS control; it does not force the selected target or bypass VATS eligibility. The menu exposes supported actions by object type, not an enumeration of arbitrary mod-script commands.
 
-### Experimental RTX Remix: Off / On / Setup
+### Parked renderer experiments
 
-In native Settings > Isometric, select **Experimental RTX Remix**, then Apply. Restart through Steam to change runtime modes. The initial value is Off.
-
-- **Off:** stops catalogue collection and, on next launch, removes this integration's verified entry DLL from the game path. Profiles and captures remain on disk. Other renderer DLLs are never overwritten or removed.
-- **Setup:** installs the checksum-pinned NVIDIA Remix 1.5.2 runtime on restart, then records loaded reference IDs, base IDs, cells, positions and camera regions as you play. It requests a single-frame Remix capture after five seconds in a region/view, no more often than every 20 seconds, with at most three attempts per scene and 64 requests per session. Collection runs only in active isometric gameplay. It incrementally indexes the meshes/materials/textures and other files actually exported by Remix. Requests and observed exports are separate records.
-- **On:** loads the same saved rtx.conf through DXVK_RTX_CONFIG_FILE and runs the runtime without automatic catalogue collection. The menu requires a catalogue from Setup first. It does not interpret captured USD scenes as replacement mods.
-
-The profile is `runtime/remix/profile/rtx.conf`, with the cumulative catalogue in `runtime/remix/profile/catalog.jsonl`. Actual Remix exports stay in the game's `rtx-remix/captures` folder and are referenced by the catalogue. Capture contents depend on what the runtime recognizes; the native reference catalogue is not a substitute for GPU mesh/material captures. Existing profile configuration edits are retained. Catalogue writes are batched and scene/reference records deduplicated across sessions. `runtime/status.json` exposes requested/session modes and capture status.
-
-This is experimental capture/profile plumbing, not a validated New Vegas RTX remaster: programmable-shader capture, orthographic rendering, lighting/material conversion and native UI compatibility still need live testing and integration. Setup does not automatically author PBR replacement materials or fix incompatible render passes. Native capture indexing observes files; it does not validate the contents of every USD export. No claim is made that all game assets are captured correctly.
-
-For recovery if the experimental renderer prevents reaching the menu, close the game and run `MojaveIsoLaunch.exe --rtx-off`. It persists Off, disables this integration's entry DLL and starts the game. Runtime provisioning failures are recorded in `runtime/remix/error.txt`.
-
-### Experimental independent DLSS 5
-
-Settings > Isometric > Experimental DLSS 5 > On, Apply, then restart through Steam. Keep RTX Remix Off. This enables the experimental native-resolution D3D9On12/helper bridge; it does not provide frame generation or ray tracing. See [DLSS5.md](desktop/DLSS5.md) for supported behavior, dependencies, validation and known limitations.
+RTX Remix and DLSS controls are hidden. The launcher and plugin ignore their saved activation values. Experimental source and local profiles are retained for later work; these features are not part of the active release. See [DLSS5.md](desktop/DLSS5.md) for historical implementation notes.

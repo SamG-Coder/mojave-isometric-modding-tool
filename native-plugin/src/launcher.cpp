@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include "display_settings.hpp"
+#include "experimental_rendering.hpp"
 namespace fs=std::filesystem;
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR arguments,int){
     wchar_t path[32768]{};if(!GetModuleFileNameW(nullptr,path,32768))return 1;
@@ -25,7 +26,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR arguments,int){
         if(!fs::exists(installed))return fail(L"The isometric plugin is missing. Install or rebuild the mod first.");
         if(!display_settings::applyPending(root))return fail(L"Could not apply display settings. Check that FalloutPrefs.ini is writable; your pending changes were retained.");
         const auto dlssDir=root/L"runtime/dlss5",aaBackup=dlssDir/L"display-backup.ini";
-        const auto dlssMode=GetPrivateProfileIntW(L"bridge",L"mode",0,(dlssDir/L"bridge.ini").c_str());
+        const auto dlssMode=experimental_rendering::enabled ? GetPrivateProfileIntW(L"bridge",L"mode",0,(dlssDir/L"bridge.ini").c_str()) : 0;
         const auto prefs=display_settings::prefsPath();
         if(dlssMode){
             fs::create_directories(dlssDir);
@@ -36,7 +37,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR arguments,int){
             fs::remove(aaBackup);
         }
         if(arguments&&std::wstring(arguments)==L"--rtx-off")WritePrivateProfileStringW(L"experimental",L"rtx_remix",L"0",(root/L"runtime/settings.ini").c_str());
-        unsigned mode=GetPrivateProfileIntW(L"experimental",L"rtx_remix",0,(root/L"runtime/settings.ini").c_str());
+        unsigned mode=experimental_rendering::enabled ? GetPrivateProfileIntW(L"experimental",L"rtx_remix",0,(root/L"runtime/settings.ini").c_str()) : 0;
         if(mode>2)mode=0;
         const wchar_t* names[]{L"Off",L"On",L"Setup"};
         if(mode||fs::exists(root/L"runtime/remix/active")){
@@ -52,6 +53,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR arguments,int){
         }
         SetEnvironmentVariableW(L"MOJAVE_RTX_MODE",std::to_wstring(mode).c_str());
         if(mode)SetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE",(root/L"runtime/remix/profile/rtx.conf").c_str());
+        else SetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE",nullptr);
         const auto loader=game/L"nvse_loader.exe";
         if(!fs::exists(loader))return fail(L"xNVSE is missing from the New Vegas folder.");
         std::wstring command=L"\""+loader.wstring()+L"\"";

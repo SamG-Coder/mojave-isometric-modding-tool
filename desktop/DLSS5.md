@@ -1,13 +1,15 @@
 # Experimental independent DLSS 5 bridge
 
-## Enable
+> **Parked:** DLSS and RTX Remix controls are hidden, and the plugin and launcher ignore their saved activation settings. Profiles and experimental code are retained for later. The launcher restores the saved MSAA value on the next start. The instructions below describe the inactive experimental implementation.
+
+## Enable (inactive)
 
 Open **Settings > Isometric**, set **Experimental RTX Remix** to **Off** and
 **Experimental DLSS 5** to **On**, then select **Apply**. Quit the game completely
 and restart through the configured Steam Play launcher. Load a save to start
 processing the isometric world image. No Remix Setup or scene capture is needed.
 
-This is a single On/Off option. Quality/Balanced/Performance presets, frame
+The bridge has an On/Off switch plus appearance controls below it. Quality/Balanced/Performance presets, frame
 generation, ray reconstruction and ray tracing are not implemented by this
 bridge. Do not interpret On as enabling every feature sold under the DLSS name.
 The current helper configuration uses native-resolution neural processing.
@@ -28,8 +30,8 @@ No game-root d3d9.dll, dgVoodoo translator or RTX Remix runtime is required.
 
 Processing happens before the native HUD. The last completed image is retained
 between neural updates; click projection uses that image's camera. Motion uses
-orthographic camera/depth reprojection with a small image-based correction.
-These are estimated vectors, not native per-object animation vectors. Processing
+orthographic camera/depth reprojection with fractional pixel precision.
+These are static-scene camera vectors, not native per-object animation vectors. The previous colour-matching correction has been removed because it could introduce false motion. Processing
 is suspended for native menus, dialogue and Pip-Boy transitions. Device reset
 releases the bridge resources before forwarding to the game.
 
@@ -78,3 +80,25 @@ Upstream sources:
 Runtime binaries, profiles and logs are ignored by Git. Third-party components
 retain their upstream licences and are not relicensed under this project's GPL.
 The vendored IPC header retains its MIT licence in native-plugin/third-party.
+
+## Native appearance controls
+
+Settings > Isometric includes DLSS style (Default/Natural/Cinematic), neural
+preset (Default/1/2/3), overall intensity, local tone, structure intensity,
+skin structure, character mask, UI correction, colour strength, paper-white
+scale and HDR transfer strength. All appearance rows are marked `*`: Apply,
+then fully restart the game to use the changes.
+
+Intensity/tone/structure range from 0 to 2 in 0.1 steps. Skin structure ranges
+from -1 to 1 in 0.1 steps. Colour and HDR transfer strength range from 0 to 1.
+Paper-white scale ranges from 0 to 10 in 0.25 steps. Existing custom values are
+preserved when opening the page. These are addon controls; HDR transfer settings
+do not enable HDR output, and neural presets are not upscaling quality presets.
+
+The page reads explicit overrides from `runtime/dlss5/appearance.ini`, falling
+back to the helper's saved settings and then the known addon defaults. Apply
+saves a separate preference snapshot. The bridge copies supported keys into
+the helper's ReShade.ini before launching it, avoiding a race with the running
+helper saving its own configuration. Global Tone is omitted because the pinned
+4.5 addon does not expose it. This page uses the existing native setting rows,
+fonts, arrows and scrolling; it is not a ReShade overlay.

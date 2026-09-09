@@ -5,6 +5,12 @@
 #include <cstdlib>
 void check(bool value,const char* message){if(!value){std::cerr<<message<<"\n";std::exit(1);}}
 int main(){
+ for(int action:{2,3,4,5,6})check(combat::nativeSwing(action),"Native attack recovery interrupted");
+ for(int action:{-1,0,1,7,8,9,10})check(!combat::nativeSwing(action),"Non-attack action stalls pursuit");
+ check(!combat::mayLeaveScriptedStartup(true,false,true,false),"Bed animation interrupted");
+ check(!combat::mayLeaveScriptedStartup(true,false,false,true),"Scripted movement lock interrupted");
+ check(!combat::mayLeaveScriptedStartup(false,true,false,false),"Opening dialogue interrupted");
+ check(combat::mayLeaveScriptedStartup(true,false,false,false),"Normal controls never release startup");
  auto north=combat::aim({0,0,0},{0,100,0});check(std::abs(north.yaw)<.001f,"North heading incorrect");
  auto east=combat::aim({0,0,0},{100,0,0});check(std::abs(east.yaw-1.5707963f)<.001f,"East heading incorrect");
  check(combat::aim({0,0,0},{0,100,100}).pitch<0,"Upward aim has wrong pitch sign");

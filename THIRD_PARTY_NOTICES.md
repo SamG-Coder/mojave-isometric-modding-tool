@@ -15,3 +15,7 @@ Camera call-site, engine-layout and ActorMover research used [carxt/JohnnyGuitar
 The minimal loader interface in native-plugin/src/nvse_abi.hpp was checked against the public [xNVSE/NVSE](https://github.com/xNVSE/NVSE) PluginAPI.h interface, revision 05f6d4f28370dedb1b9b10edf3fcdf750ae3de4e. Credit: the NVSE and xNVSE teams and contributors. xNVSE is an external runtime dependency, installed separately; its source and binaries are not bundled here.
 
 Python, Tkinter, Pillow, Windows SDK and Visual Studio are external dependencies and retain their own licences. Game assets and original executables are not distributed with this project.
+
+## DLSS5-Feeder (parked experimental source)
+
+Host and support code retain their upstream MIT licence, including Jean-Laurent ROUZIES and NIGos notices. See [upstream attribution](native-plugin/third-party/dlss5-feeder/README.md) and [licence](native-plugin/third-party/dlss5-feeder/LICENSE). The experimental helper is not bundled as a runtime in this release. NVIDIA SDK/runtime files and Lumenite shader implementations are not distributed.

@@ -9,4 +9,6 @@
  <text name="Row3"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
  <text name="Row4"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
  <text name="Row5"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row6"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
+ <text name="Row7"><visible>0</visible><x>12</x><y>48</y><depth>2</depth><font>3</font><string> </string><wrapwidth>0</wrapwidth><alpha>255</alpha><systemcolor>&hudmain;</systemcolor></text>
 </rect>

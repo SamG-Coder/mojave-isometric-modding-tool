@@ -32,6 +32,7 @@ void open(int kind){
   add("Resolution",L"Display",L"resolution",{}, {},L"");fillResolutions(UINT(_wtoi(rows[0].values[rows[0].selected].c_str())),read(L"Display",L"iSize W",L"1024")+L" x "+read(L"Display",L"iSize H",L"768"));
   for(auto& o:display_settings::options())add(o.label,o.section,o.key,o.values,o.labels,read(o.section,o.key));
  }else{
+  if(experimental_rendering::enabled)message=std::string("DLSS: ")+renderer_bridge::status()+". Appearance changes need restart.";
   add("Projection",L"",L"projection",{L"1",L"0"},{"Isometric","Perspective"},orthographic?L"1":L"0");
   std::vector<std::wstring> zoom;std::vector<std::string> zoomText;for(int n=500;n<=4000;n+=250){zoom.push_back(std::to_wstring(n));zoomText.push_back(std::to_string(n));}add("Camera zoom span",L"",L"span",zoom,zoomText,std::to_wstring(int(span)));
   std::vector<std::wstring> angles;std::vector<std::string> angleText;for(int n=20;n<=80;n+=5){angles.push_back(std::to_wstring(n));angleText.push_back(std::to_string(n)+" degrees");}add("Camera pitch",L"",L"pitch",angles,angleText,std::to_wstring(int(desiredPitch)));
@@ -40,8 +41,22 @@ void open(int kind){
   add("Damage numbers",L"",L"damage",{L"0",L"1"},{"Off","On"},showDamageNumbers?L"1":L"0");
   add("Automatic distant aiming",L"",L"ads",{L"0",L"1"},{"Off","On"},automaticADS?L"1":L"0");
   add("Start isometric after loading",L"",L"auto",{L"0",L"1"},{"Off","On"},autoEnable?L"1":L"0");
+  if(experimental_rendering::enabled){
   add("Experimental RTX Remix",L"",L"rtx_remix",{L"0",L"1",L"2"},{"Off","On","Setup"},std::to_wstring(rtxMode));
   add("Experimental DLSS 5",L"",L"dlss5",{L"0",L"2"},{"Off","On"},std::to_wstring(GetPrivateProfileIntW(L"bridge",L"mode",0,(std::filesystem::path(bridge)/L"dlss5/bridge.ini").c_str())));
+  add("DLSS guide view",L"",L"dlss_debug",{L"0",L"1",L"2"},{"Off","Motion","History mask"},std::to_wstring(renderer_bridge::debugView));
+  for(const auto& option:dlss_appearance::options()){
+   std::vector<std::wstring> values;std::vector<std::string> labels;
+   for(int n=option.low;n<=option.high;n+=option.step){
+    wchar_t value[32];if(option.labels.empty())swprintf_s(value,L"%.2f",n/100.0);else swprintf_s(value,L"%d",n);
+    values.emplace_back(value);labels.push_back(option.labels.empty()?narrow(value):option.labels[n-option.low]);
+   }
+   auto current=dlss_appearance::selected(std::filesystem::path(bridge)/L"dlss5",option);
+   // Equivalent INI numbers (1, 1.0, 1.00) select the existing native arrow value.
+   for(const auto& value:values)if(std::abs(wcstof(value.c_str(),nullptr)-wcstof(current.c_str(),nullptr))<.0001f){current=value;break;}
+   add(option.label,dlss_appearance::section,option.key,std::move(values),std::move(labels),current);
+  }
+  }
  }
 
 }
@@ -74,13 +89,26 @@ bool apply(){
   message=changed?"Saved. Applies next time you start the game.":"No new display changes.";
  }else{
   int dlssRequested=0,remixRequested=rtxMode;
+  bool appearanceChanged=false;
+  if(experimental_rendering::enabled){
+  for(auto& r:rows)if(r.key==L"dlss_debug"){renderer_bridge::debugView=_wtoi(r.values[r.selected].c_str());WritePrivateProfileStringW(L"bridge",L"debug_view",r.values[r.selected].c_str(),(std::filesystem::path(bridge)/L"dlss5/bridge.ini").c_str());}
   for(auto& r:rows){if(r.key==L"dlss5")dlssRequested=_wtoi(r.values[r.selected].c_str());if(r.key==L"rtx_remix")remixRequested=_wtoi(r.values[r.selected].c_str());}
   if(dlssRequested&&remixRequested){message="Choose DLSS 5 or RTX Remix, then restart.";return false;}
-  if(dlssRequested&&!std::filesystem::exists(std::filesystem::path(bridge)/L"dlss5/candidate/host64/dlss5-feed-host64.exe")){message="DLSS 5 runtime is not installed.";return false;}
+  if(dlssRequested&&!std::filesystem::exists(std::filesystem::path(bridge)/L"dlss5/candidate/host64/MojaveIsoNeuralHost.exe")){message="DLSS 5 runtime is not installed.";return false;}
   for(auto& r:rows)if(r.key==L"rtx_remix"&&r.values[r.selected]==L"1"&&!std::filesystem::exists(std::filesystem::path(bridge)/"remix/profile/catalog.jsonl")){message="Run Setup in a loaded game to create a profile first.";return false;}
+  auto appearanceFile=dlss_appearance::preferences(std::filesystem::path(bridge)/L"dlss5");
+  auto appearanceTemp=appearanceFile;appearanceTemp+=L".tmp";
+  for(auto& r:rows)if(r.section==dlss_appearance::section&&r.values[r.selected]!=r.original)appearanceChanged=true;
+  if(appearanceChanged){
+   // Write the complete page snapshot atomically; preserve the previous file on failure.
+   for(auto& r:rows)if(r.section==dlss_appearance::section&&!WritePrivateProfileStringW(dlss_appearance::section,r.key.c_str(),r.values[r.selected].c_str(),appearanceTemp.c_str())){message="Could not save DLSS appearance settings.";return false;}
+   WritePrivateProfileStringW(nullptr,nullptr,nullptr,appearanceTemp.c_str());
+   if(!MoveFileExW(appearanceTemp.c_str(),appearanceFile.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){message="Could not save DLSS appearance settings.";return false;}
+  }
   if(!WritePrivateProfileStringW(L"bridge",L"mode",std::to_wstring(dlssRequested).c_str(),(std::filesystem::path(bridge)/L"dlss5/bridge.ini").c_str())){message="Could not save DLSS setting.";return false;}
+  }
   for(auto& r:rows){auto v=r.values[r.selected];float n=wcstof(v.c_str(),nullptr);if(r.key==L"projection")orthographic=n!=0;else if(r.key==L"span")span=n;else if(r.key==L"pitch")desiredPitch=n;else if(r.key==L"rotation")rotationSpeed=n;else if(r.key==L"aim_line")showAimLine=n!=0;else if(r.key==L"damage")showDamageNumbers=n!=0;else if(r.key==L"ads")automaticADS=n!=0;else if(r.key==L"auto")autoEnable=n!=0;else if(r.key==L"rtx_remix")rtxMode=std::clamp(int(n),0,2);}
-  saveSettings(true);message=dlssRequested!=renderer_bridge::mode?"Saved. Restart the game for DLSS 5.":rtxMode!=rtxSessionMode?"Saved. Restart for RTX mode; first setup installs runtime.":"Isometric settings applied.";
+  saveSettings(true);message=appearanceChanged||dlssRequested!=renderer_bridge::mode?"Saved. Restart the game for DLSS 5.":rtxMode!=rtxSessionMode?"Saved. Restart for RTX mode; first setup installs runtime.":"Isometric settings applied.";
  }
  for(auto& r:rows)r.original=r.values[r.selected];return true;
 }

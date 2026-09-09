@@ -40,6 +40,7 @@ bool altAiming{},lastVats{};float priorAimPitch{};bool aimOwned{};uint64_t attac
 void cancelCombat();void combatTick();void attackClick(float,float);
 void closeContext();void resetContext();void openContext();bool contextInput(bool click);void updateContext();bool contextOpen{};
 navigation::Search route;navigation::Follower follower;uint64_t routeReuses{},routeSwaps{};unsigned stuckRepairs{};size_t waypoint{};uint64_t routeStarted{},lastPlanningMs{};double plannerCpuMs{},lastPlannerStepMs{};unsigned plannerSteps{};size_t nativeTriangles{};unsigned nativeExpanded{};double nativePlanningMs{};std::string navigationSource="grid";
+std::vector<uint32_t> pickupQueue;uint64_t pickupReadyAt{};void pickupTick();
 struct NearbyAction{uint32_t id;Vec pos;std::string text;float range;};std::vector<NearbyAction> nearby;
 struct ActionBox{uint32_t id;float x,y,w,h;};std::vector<ActionBox> actionBoxes;
 struct MapCell{Vec p;int state=0;};std::array<MapCell,1024> mapCells{};Vec mapOrigin{};size_t mapIndex{};bool mapReady{};
@@ -53,7 +54,8 @@ std::string root, bridge; Console* console{}; Scripts* scripts{};
 bool enabled{},requested{},hooksReady{},moving{},captureRequested{},lastL{},lastF{},lastR{};
 float rotationSpeed=.35f;bool showAimLine=true,showDamageNumbers=true,automaticADS=true;
 void saveSettings(bool force=false);void installSettingsMenu();void updateLighting(bool enable);
-bool autoEnable=true; bool worldCameraArmed{};
+bool autoEnable=true; bool worldCameraArmed{};bool startupScriptOwnsPlayer=true;
+void maintainDialogueBody();
 int rtxMode{},rtxSessionMode{};void rtxTick();void rtxReleaseKey();std::string rtxStatus();
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
 uint32_t interactionId{},hoverRef{};uint64_t markerUntil{},activationStarted{},lastFrameTick{};
@@ -99,7 +101,7 @@ void cancelCombat(){
     aimLine.valid=false;lastAimUpdate=0;attack.shot={};attack.sightsGate.reset();attack.meleeReleaseAt=0;attack.ordered=false;altAiming=false;
     if(aimOwned&&player()){at<float>(player(),0x24)=priorAimPitch;aimOwned=false;}
 }
-void stop(){cancelCombat();stopMovement();}
+void stop(){pickupQueue.clear();cancelCombat();stopMovement();}
 void restoreProjection(){if(savedCamera){at<Frustum>(savedCamera,0xDC)=savedFrustum;savedCamera=nullptr;}}
 void ownControls(bool acquire){
     if(acquire==controlsAcquired)return;
@@ -142,18 +144,19 @@ void updateReticle(bool hide);
 void restoreCover();
 void setEnabled(bool value){
     if(value==enabled)return;
+    if(value&&startupScriptOwnsPlayer){note="Waiting for scripted wake-up / player controls";return;}
     wheelInput.reset();mouseDeltaX=0;mouseDeltaY=0;
     if(value&&(!hooksReady||!player()||(!gameMode()&&!dialogue())||!at<void*>(player(),0x40)||!at<void*>(player(),0x64))){note="Load a game before enabling the camera";return;}
     if(!value){closeContext();updateLighting(false);updatePipboyHands(false);useNativePipboy(false);restoreCover();updateReticle(false);displayCamera.valid=renderCamera.valid=false;stop();restoreProjection();enabled=false;ownControls(false);cameraBlend=0;if(priorThird==false&&player())reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),true);note="Normal controls restored";return;}
     useNativePipboy(true);
-    priorThird=at<uint8_t>(player(),0x64C)!=0;if(!priorThird)reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
+    priorThird=at<uint8_t>(player(),0x64A)!=0;if(!priorThird)reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
     ownControls(gameMode()&&!dialogue());
     fadeAlpha=1;fadeHoldUntil=GetTickCount64()+80;enabled=true;cursorX=width/2;cursorY=height/2;note="Isometric prototype enabled";
 }
 bool seated(){return player()&&at<uint32_t>(player(),0x1AC)!=0;}
-bool startupCameraReady(){return combat::startupCameraReady(requested,enabled,hooksReady,worldCameraArmed,player()&&reference(0x14)==player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64));}
+bool startupCameraReady(){return !startupScriptOwnsPlayer&&combat::startupCameraReady(requested,enabled,hooksReady,worldCameraArmed,player()&&reference(0x14)==player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64));}
 bool cameraActive(){return player()&&combat::keepCamera(enabled||startupCameraReady(),at<void*>(player(),0x40)&&at<void*>(player(),0x64),pendingDisable,pipboyMode());}
-bool active(){return !pipboyMode()&&!seated()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64C)&&!pendingActivation&&!pendingDisable;}
+bool active(){return !pipboyMode()&&!seated()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64A)&&!pendingActivation&&!pendingDisable;}
 // Filter the mouse device result before vanilla camera code sees lZ.
 // Chain the existing GetDeviceState implementation, including xNVSE's wrapper.
 using GetMouseState=HRESULT(WINAPI*)(void*,DWORD,void*);
@@ -233,7 +236,7 @@ using SetVector=void(__thiscall*)(void*,const Vec*);
 using SetMatrix=void(__thiscall*)(void*,const Mat*);
 SetVector originalPos{}; SetMatrix originalRot{};
 void __fastcall positionHook(void* node,void*,const Vec* pos){
-    if(cameraActive()){cameraBlend=1;basis();updateLighting(true);originalPos(node,&cameraPos);++cameraUpdates;}else {updateLighting(false);originalPos(node,pos);}
+    if(cameraActive()){maintainDialogueBody();cameraBlend=1;basis();updateLighting(true);originalPos(node,&cameraPos);++cameraUpdates;}else {updateLighting(false);originalPos(node,pos);}
 }
 void __fastcall rotationHook(void* node,void*,const Mat* rot){
     if(!cameraActive()){restoreProjection();originalRot(node,rot);return;}
@@ -247,7 +250,7 @@ void __fastcall rotationHook(void* node,void*,const Mat* rot){
     }
 }
 bool __fastcall dialoguePOVHook(void* actor,void*,bool firstPerson){
-    if(actor==player()&&cameraActive()&&!seated())firstPerson=false;
+    if(actor==player()&&cameraActive()&&!startupScriptOwnsPlayer)firstPerson=false;
     return reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(actor,firstPerson);
 }
 uintptr_t callTarget(uintptr_t a){if(*reinterpret_cast<uint8_t*>(a)!=0xe8)return 0;return a+5+*reinterpret_cast<int32_t*>(a+1);}
@@ -397,6 +400,30 @@ void installHooks(){
         }
     }
 }
+void assistPickup(float x,float y,Vec& hit,void*& object){
+    if(interactable(parentReference(object)))return;
+    static std::vector<uint32_t> candidates;static uint64_t refreshed{};static void* cachedCell{};
+    auto cell=at<void*>(player(),0x40);auto now=GetTickCount64();auto feet=at<Vec>(player(),0x30);
+    if(cell!=cachedCell||now-refreshed>=800){
+        candidates.clear();cachedCell=cell;refreshed=now;
+        auto table=global(0x11C54C0);auto buckets=table?at<void**>(table,8):nullptr;auto count=table?at<uint32_t>(table,4):0;
+        if(buckets&&count<1000000)for(uint32_t i=0;i<count;++i)for(auto e=buckets[i];e;e=at<void*>(e,0)){
+            auto ref=at<void*>(e,8);if(areaPickup(ref)&&at<void*>(ref,0x40)==cell&&length(at<Vec>(ref,0x30)-feet)<1800)candidates.push_back(at<uint32_t>(ref,0xC));
+        }
+    }
+    float best=18.f*std::max(1.f,height/720.f);Vec selected=hit;
+    for(auto id:candidates){
+        auto ref=reference(id);if(!areaPickup(ref)||at<void*>(ref,0x40)!=cell)continue;
+        auto pos=at<Vec>(ref,0x30);if(length(pos-hit)>100||std::abs(pos.z-feet.z)>150)continue;
+        auto render=at<void*>(ref,0x64);auto node=render?at<void*>(render,0x14):nullptr;if(!node)continue;
+        float sx{},sy{};if(!displayCamera.project(pos,sx,sy))continue;
+        float d=std::hypot(sx-x,sy-y);if(d>=best)continue;
+        Vec obstruction{};void* blocker{};auto from=hit+Vec{0,0,30},to=pos+Vec{0,0,10},delta=to-from;
+        if(length(delta)>1&&raycast(from,normalized(delta),obstruction,blocker)&&length(obstruction-from)<length(delta)-8&&parentReference(blocker)!=ref)continue;
+        best=d;selected=pos;object=node;
+    }
+    hit=selected;
+}
 bool pick(float x,float y,Vec& hit,void*& hitObject,bool aimSelection=false){
     if(!active()||!camera||cameraBlend<0.999f)return false;
     Vec origin{},ray{};
@@ -427,6 +454,7 @@ bool pick(float x,float y,Vec& hit,void*& hitObject,bool aimSelection=false){
             if(raycast(rayBelowHeight(origin,ray,feet.z+100),ray,belowHit,belowObject)){hit=belowHit;hitObject=belowObject;}
         }
     }
+    if(!aimSelection)assistPickup(x,y,hit,hitObject);
     return true;
 }
 bool groundProbe(Vec guess,Vec& ground){
@@ -486,7 +514,7 @@ void beginWalking(){
     ++routeSwaps;resumeWalking();note=interactionId?"Following route to interaction":"Following updated route";
 }
 void destination(float x,float y){
-    if(!active())return;cancelCombat();
+    if(!active())return;pickupQueue.clear();cancelCombat();
     void* hitObject{};Vec hit{};
     if(!pick(x,y,hit,hitObject)){note="No collision surface under cursor";stop();return;}
     Vec pos=at<Vec>(player(),0x30);if(length(hit-pos)>6000){note="Destination too far away";stop();return;}
@@ -556,7 +584,8 @@ void walk(){
         }
     }
     at<float>(player(),0x2c)=atan2f(delta.x,delta.y);
-    movement(1|512);
+    // The held native forward binding drives locomotion and its animation.
+    // Forcing mover flags here overrides attack/recoil/root-motion state.
 }
 bool combatActor(void* ref){
     if(!ref||ref==player())return false;auto type=at<uint8_t>(ref,4);
@@ -572,6 +601,18 @@ void* namedBone(void* node,const char* wanted,unsigned depth=0){
     return nullptr;
 }
 void* actorRoot(void* ref){auto render=ref?at<void*>(ref,0x64):nullptr;return render?at<void*>(render,0x14):nullptr;}
+void maintainDialogueBody(){
+    static uint64_t lastTalking{};
+    if(!cameraActive()||startupScriptOwnsPlayer){lastTalking=0;return;}
+    auto now=GetTickCount64();if(dialogue())lastTalking=now;
+    if(!lastTalking||now-lastTalking>750)return;
+    // Native conversation setup can app-cull the world body independently of
+    // the POV flag. Only repair the player root, never equipment or effect alpha.
+    auto node=actorRoot(player());if(node&&(at<uint32_t>(node,0x30)&1)){
+        at<uint32_t>(node,0x30)&=~1u;
+        log("Restored dialogue player-root visibility");
+    }
+}
 bool validActorPoint(Vec point,Vec feet){return std::isfinite(point.x)&&std::isfinite(point.y)&&std::isfinite(point.z)&&length(point-feet)<400;}
 Vec bodyPoint(void* ref){
     auto pos=at<Vec>(ref,0x30);auto node=actorRoot(ref);
@@ -628,7 +669,7 @@ void refreshAimLine(){
 void releaseAttack(){if(attack.held){holdMappedControl(4,false);attack.held=false;}attack.meleeReleaseAt=0;}
 void setSights(bool value){value=value&&ownedControls[1];if(value==attack.sights)return;holdMappedControl(6,value);attack.sights=value;attack.sightsGate.reset();}
 void attackTarget(void* ref,Vec point){
-    cancelCombat();stopMovement();
+    pickupQueue.clear();cancelCombat();stopMovement();
     attack={};attack.hitRef=ref?at<uint32_t>(ref,0xC):0;attack.id=combatActor(ref)?attack.hitRef:0;
     attack.point=attack.id?bodyPoint(ref):point;attack.single=!attack.id;
     attack.cell=at<void*>(player(),0x40);attack.ordered=true;attack.started=GetTickCount64();
@@ -676,7 +717,14 @@ void combatTick(){
     auto pos=at<Vec>(player(),0x30),eye=firingOrigin();float targetDistance=length(attack.point-eye);
     if(melee)targetDistance=combat::meleeDistance(pos,victim?at<Vec>(victim,0x30):attack.point);
     if(melee)eye=pos+Vec{0,0,65};
-    bool clear=shotClear(eye,attack.point,victim?victim:reference(attack.hitRef));
+    // Finish an accepted swing before resuming pursuit of a moving opponent.
+    // Otherwise a target crossing the range edge can restart locomotion mid-swing.
+    if(melee&&process){
+        auto action=reinterpret_cast<int16_t(__thiscall*)(void*)>(at<void**>(process,0)[0x3E4/4])(process);
+        if(combat::nativeSwing(action)){stopMovement();releaseAttack();note="Finishing melee swing";return;}
+        if(attack.held){stopMovement();facePoint(attack.point);return;}
+    }
+    bool clear=shotClear(eye,melee&&victim?at<Vec>(victim,0x30)+Vec{0,0,65}:attack.point,victim?victim:reference(attack.hitRef));
     if(!combat::canEngage(targetDistance,range,clear,active(),!victim||combatActor(victim),melee)){
         attack.aimReadyAt=0;releaseAttack();setSights(false);if(attack.single){stop();note=melee?"Melee target is blocked or out of range":"Shot is out of range";return;}
         if(combat::refreshPursuit(now,attack.lastRepath,length(at<Vec>(victim,0x30)-attack.pursuitTarget),range,moving,route.state==navigation::Search::State::Searching)){
@@ -714,7 +762,7 @@ void combatTick(){
         // Wait for native recovery and facing; retry a rejected press with a
         // release interval. Stop holding as soon as a native swing is observed.
         int16_t action=reinterpret_cast<int16_t(__thiscall*)(void*)>(at<void**>(process,0)[0x3E4/4])(process);
-        bool swinging=action>1&&action<6;
+        bool swinging=combat::nativeSwing(action);
         if(swinging){releaseAttack();note="Native melee swing in progress";return;}
         Vec facingPoint=victim?at<Vec>(victim,0x30):attack.point;
         if(!combat::meleeFacing(pos,facingPoint,at<float>(player(),0x2C))){releaseAttack();note="Turning toward melee target";return;}
@@ -738,8 +786,9 @@ void status(){
     s<<",\"lighting_coverage\":"<<lightingCoverage<<",\"lighting_fade_override\":"<<(lightingFades[0].held?"true":"false");
     s<<",\"world_surface\":["<<renderTargetWidth<<","<<renderTargetHeight<<"],\"world_viewport\":["<<renderCamera.x<<","<<renderCamera.y<<","<<renderCamera.width<<","<<renderCamera.height<<"],\"display_viewport\":["<<displayCamera.x<<","<<displayCamera.y<<","<<displayCamera.width<<","<<displayCamera.height<<"]";
     s<<",\"camera_blend\":"<<cameraBlend<<",\"yaw\":"<<yaw<<",\"controls_owned\":"<<(controlsAcquired?"true":"false")<<",\"dialogue\":"<<(dialogue()?"true":"false")<<",\"interaction_id\":"<<interactionId<<",\"hover_ref\":"<<hoverRef<<",\"pitch\":"<<pitch<<",\"pick_error_pixels\":"<<lastPickError<<",\"planning\":"<<(route.state==navigation::Search::State::Searching?"true":"false")<<",\"path_nodes\":"<<follower.points.size()<<",\"route_reuses\":"<<routeReuses<<",\"route_swaps\":"<<routeSwaps<<",\"expanded_nodes\":"<<route.expanded<<",\"ground_queries\":"<<route.groundQueries<<",\"edge_queries\":"<<route.edgeQueries<<",\"path_cache_hits\":"<<route.cacheHits<<",\"planning_ms\":"<<lastPlanningMs<<",\"planner_cpu_ms\":"<<plannerCpuMs<<",\"planner_step_ms\":"<<lastPlannerStepMs<<",\"planner_updates\":"<<plannerSteps<<",\"navigation_source\":\""<<navigationSource<<"\",\"native_triangles\":"<<nativeTriangles<<",\"native_expanded\":"<<nativeExpanded<<",\"native_planning_ms\":"<<nativePlanningMs<<",\"attack_target\":"<<attack.id<<",\"attack_ordered\":"<<(attack.ordered?"true":"false")<<",\"aim_down_sights_requested\":"<<(attack.sights?"true":"false")<<",\"aim_down_sights_active\":"<<(nativeAiming()?"true":"false")<<",\"pipboy_mode\":"<<pipboyMode()<<",\"seated\":"<<(seated()?"true":"false")<<",\"attack_requests\":"<<attackRequests<<",\"direct_route\":"<<(route.directRoute?"true":"false")<<",\"nearby_actions\":"<<nearby.size()<<",\"cutaway_occluders\":"<<occludingCover.size()<<",\"fade_alpha\":"<<fadeAlpha;
-    if(player()){s<<",\"third_person_body\":"<<(at<uint8_t>(player(),0x64C)?"true":"false");auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
+    if(player()){s<<",\"third_person_body\":"<<(at<uint8_t>(player(),0x64A)?"true":"false");auto p=at<Vec>(player(),0x30);s<<",\"player\":["<<p.x<<","<<p.y<<","<<p.z<<"]";}
     s<<",\"rtx_mode\":"<<rtxMode<<",\"rtx_session_mode\":"<<rtxSessionMode<<",\"rtx_status\":"<<remix_catalog::quote(rtxStatus());
+    s<<",\"dlss_status\":"<<remix_catalog::quote(renderer_bridge::status())<<",\"dlss_submitted_frames\":"<<(renderer_bridge::pipeline?renderer_bridge::pipeline->frame:0);
     s<<",\"context_menu_open\":"<<(contextOpen?"true":"false");
     s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
@@ -886,10 +935,10 @@ void destinationMarker(IDirect3DDevice9* device){
 }
 std::string objectName(void* ref){
     auto base=ref?at<void*>(ref,0x20):nullptr;if(!base)return "World object";auto type=at<uint8_t>(base,4);int offset=(type==0x2A||type==0x2B)?0xD0:(type==0x1B?0x3C:(type==0x31?0x48:0x30));
-    if(type==0x26)return "Plant";
+
     if(!context_menu::activatable(type))return "World object";
     const char* name=at<const char*>(base,offset+4);auto len=at<uint16_t>(base,offset+8);
-    std::string label=(name&&len&&len<512)?std::string(name,std::min<size_t>(len,27)):"Object";
+    std::string label=(name&&len&&len<512)?std::string(name,std::min<size_t>(len,120)):"Object";
     for(char& c:label)if(static_cast<unsigned char>(c)<32)c=' ';
     return label;
 }
@@ -1001,7 +1050,7 @@ void present(){
     bool gameplay=active();ownControls(gameplay);
     bool cameraOwned=cameraActive();updateLighting(cameraOwned);if(pipboyMode())restoreProjection();static bool previouslyActive{};
     if(cameraOwned!=previouslyActive&&!pendingActivation&&!pendingDisable){fadeAlpha=1;fadeHoldUntil=now+120;}previouslyActive=cameraOwned;
-    float fadeGoal=(pendingActivation||pendingDisable||now<fadeHoldUntil)?1.f:0.f;
+    float fadeGoal=((pendingActivation&&!areaPickup(reference(interactionId)))||pendingDisable||now<fadeHoldUntil)?1.f:0.f;
     float fadeStep=frameDt/.22f;fadeAlpha=fadeGoal>fadeAlpha?std::min(fadeGoal,fadeAlpha+fadeStep):std::max(fadeGoal,fadeAlpha-fadeStep);
     if(!gameplay){closeContext();mouseDeltaX=0;mouseDeltaY=0;displayCamera.valid=false;wheelInput.reset();if(!pendingActivation)stop();}
     cameraBlend=cameraOwned?1.f:0.f;
@@ -1043,7 +1092,7 @@ void saveSettings(bool force){
     static std::string previous;static uint64_t lastSave{};
     auto now=GetTickCount64();if(!force&&now-lastSave<1000)return;lastSave=now;
     std::ostringstream text;text<<"[startup]\nauto_enable="<<(autoEnable?1:0)<<"\n[camera]\nyaw="<<std::remainder(desiredYaw,360.f)<<"\npitch="<<desiredPitch<<"\ndistance="<<distance<<"\nspan="<<span<<"\northographic="<<(orthographic?1:0)<<"\nrotation_speed="<<rotationSpeed<<"\naim_line="<<(showAimLine?1:0)<<"\ndamage_numbers="<<(showDamageNumbers?1:0)<<"\nauto_ads="<<(automaticADS?1:0)<<"\n";
-    text<<"[experimental]\nrtx_remix="<<rtxMode<<"\n";
+    text<<"[experimental]\nrtx_remix="<<(experimental_rendering::enabled?rtxMode:int(GetPrivateProfileIntA("experimental","rtx_remix",0,(bridge+"/settings.ini").c_str())))<<"\n";
     if(text.str()==previous)return;
     {std::ofstream file(bridge+"/settings.tmp");file<<text.str();if(!file)return;}
     if(MoveFileExA((bridge+"/settings.tmp").c_str(),(bridge+"/settings.ini").c_str(),MOVEFILE_REPLACE_EXISTING))previous=text.str();
@@ -1058,34 +1107,41 @@ void loadSettings(){
     distance=read("distance",1100,200,4000);span=read("span",1500,300,5000);
     orthographic=GetPrivateProfileIntA("camera","orthographic",1,file.c_str())!=0;
     rotationSpeed=read("rotation_speed",.35f,.1f,1.f);showAimLine=GetPrivateProfileIntA("camera","aim_line",1,file.c_str())!=0;showDamageNumbers=GetPrivateProfileIntA("camera","damage_numbers",1,file.c_str())!=0;automaticADS=GetPrivateProfileIntA("camera","auto_ads",1,file.c_str())!=0;
-    rtxMode=std::clamp(int(GetPrivateProfileIntA("experimental","rtx_remix",0,file.c_str())),0,2);char session[8]{};GetEnvironmentVariableA("MOJAVE_RTX_MODE",session,8);rtxSessionMode=std::clamp(atoi(session),0,2);
+    if(experimental_rendering::enabled){rtxMode=std::clamp(int(GetPrivateProfileIntA("experimental","rtx_remix",0,file.c_str())),0,2);char session[8]{};GetEnvironmentVariableA("MOJAVE_RTX_MODE",session,8);rtxSessionMode=std::clamp(atoi(session),0,2);}
+    else {rtxMode=0;rtxSessionMode=0;}
     autoEnable=GetPrivateProfileIntA("startup","auto_enable",1,file.c_str())!=0;requested=autoEnable;
 }
 void onMessage(Message* m){
     // These ordinals are the public xNVSE 6.4.8 messaging ABI.
     switch(m->type){
     case 9:installHooks();break; // PostPostLoad
-    case 2:case 6:{std::lock_guard<std::mutex> lock(damageMutex);damageNumbers.clear();}restoreCover();mapReady=false;nearby.clear();pendingDisable=false;wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;worldCameraArmed=false;resetContext();camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
+    case 2:case 6:{std::lock_guard<std::mutex> lock(damageMutex);damageNumbers.clear();}restoreCover();mapReady=false;nearby.clear();pendingDisable=false;wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;worldCameraArmed=false;startupScriptOwnsPlayer=true;resetContext();camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
     // LoadGame runs after Fallout has read the world, before serialization callbacks.
     // Arm render ownership here; do not run script/control setup from the callback.
     case 3:worldCameraArmed=true;log("Camera armed at LoadGame");break;
     case 8:worldCameraArmed=m->data!=nullptr;log(worldCameraArmed?"Camera armed after successful load":"Camera disarmed after failed load");break;
-    case 14:resetContext();requested=autoEnable;worldCameraArmed=true;log("Camera armed at NewGame");break;
+    case 14:resetContext();setEnabled(false);startupScriptOwnsPlayer=true;requested=autoEnable;worldCameraArmed=true;log("Camera armed at NewGame");break;
     case 19:expressions.clear();break; // ClearScriptDataCache
     case 1:case 7:renderer_bridge::shutdown();rtxReleaseKey();updateLighting(false);saveSettings();break; // Exit
     case 20:{static uint64_t previousTick{};auto now=GetTickCount64();if(previousTick&&now-previousTick>500)stop();previousTick=now;
-        if(pendingActivation&&fadeAlpha>=.99f&&now-activationStarted>=250){
-            auto ref=reference(interactionId);pendingActivation=false;interactionId=0;fadeHoldUntil=now+250;
+        if(pendingActivation&&(areaPickup(reference(interactionId))||fadeAlpha>=.99f)&&now-activationStarted>=100){
+            auto ref=reference(interactionId);bool pickup=areaPickup(ref);pendingActivation=false;interactionId=0;if(!pickup)fadeHoldUntil=now+250;pickupReadyAt=now+350;
             if(gameMode()&&interactable(ref)&&at<void*>(ref,0x40)==at<void*>(player(),0x40)&&length(target-at<Vec>(player(),0x30))<200){
                 auto delta=target-at<Vec>(player(),0x30);at<float>(player(),0x2C)=atan2f(delta.x,delta.y);
                 log("Activating reference "+std::to_string(at<uint32_t>(ref,0xC)));note=activate(ref)?"Interaction submitted to game":"Game declined interaction";
             }
         }
         if(pendingDisable&&fadeAlpha>=.99f){pendingDisable=false;setEnabled(false);fadeHoldUntil=now+150;}
+        if(startupScriptOwnsPlayer&&worldCameraArmed&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
+            if(combat::mayLeaveScriptedStartup(gameMode(),dialogue(),seated(),number("IsControlDisabled 0")!=0)){
+                startupScriptOwnsPlayer=false;log("Scripted startup finished; player movement available");
+            }
+        }
+        maintainDialogueBody();
         // Dialogue can enter native first person even while our camera stays
         // isometric. Restore the native third-person body in dialogue too.
         // cameraActive excludes every Pip-Boy opening/open/closing state.
-        if(combat::restoreThirdPersonBody(cameraActive(),gameMode(),dialogue(),seated(),player()&&at<uint8_t>(player(),0x64C))){
+        if(combat::restoreThirdPersonBody(cameraActive(),gameMode(),dialogue(),seated(),player()&&at<uint8_t>(player(),0x64A))){
             reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(player(),false);
             if(dialogue())log("Restored third-person player body during dialogue");
         }
@@ -1093,7 +1149,7 @@ void onMessage(Message* m){
         // Render hooks can own the first loaded camera before this main-loop setup.
         // Dialogue is a valid startup state, but its movement controls stay native.
         if(startupCameraReady()&&(gameMode()||dialogue()))setEnabled(true);
-        if(enabled)useNativePipboy(true);updatePipboyHands(enabled&&pipboyMode()!=0);updateDamageNumbers();updateReticle(active());poll();input();sampleWorld();nativeInteraction();updateContext();rtxTick();saveSettings();break;} // MainGameLoop
+        if(enabled)useNativePipboy(true);updatePipboyHands(enabled&&pipboyMode()!=0);updateDamageNumbers();updateReticle(active());poll();input();sampleWorld();pickupTick();nativeInteraction();updateContext();rtxTick();saveSettings();break;} // MainGameLoop
     case 24:present();break; // OnFramePresent
     }
 }

@@ -70,7 +70,7 @@
 #include <cstdint>
 
 #define FEED_IPC_MAGIC   0x35534C44u  // 'DLS5'
-#define FEED_IPC_VERSION 9u
+#define FEED_IPC_VERSION 10u // Mojave extension: full-resolution R8 history rejection mask
 
 // Version 9 added the tag 'O', with no payload: "open ReShade's overlay in your own window".
 // The host does that for itself once at startup, and until v9 nothing could ask it again, so
@@ -98,7 +98,7 @@
 // The bytes a version-1 client sends as its hello: magic, version, pid.
 #define FEED_HELLO_V1_SIZE (3u * sizeof(uint32_t))
 
-enum FeedSlot { FEED_COLOR = 0, FEED_OUTPUT, FEED_DEPTH, FEED_MV, FEED_SLOTS };
+enum FeedSlot { FEED_COLOR = 0, FEED_OUTPUT, FEED_DEPTH, FEED_MV, FEED_MASK, FEED_SLOTS };
 
 // For logs on both sides of the pipe: "tex 1" told a reporter nothing, and issue #43 turned
 // on knowing that slot 1 is the DLSS output.
@@ -110,6 +110,7 @@ static inline const char *FeedSlotName(int slot)
     case FEED_OUTPUT: return "Output";
     case FEED_DEPTH:  return "Depth";
     case FEED_MV:     return "MV";
+    case FEED_MASK:   return "HistoryMask";
     default:          return "?";
     }
 }

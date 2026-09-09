@@ -9,6 +9,27 @@ void check(HRESULT hr,const char* what){if(FAILED(hr)){printf("FAIL %s: %08X\n",
 int main(int argc,char** argv){
  using namespace renderer_bridge; const UINT W=argc>1?640:64,H=argc>1?360:64;
  try{
+ for(auto entry:{"vs","copy","feed"}){
+  ComPtr<ID3DBlob> compiled,errors;auto hr=D3DCompile(shader,sizeof(shader),nullptr,nullptr,nullptr,entry,strcmp(entry,"vs")==0?"vs_5_0":"ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&compiled,&errors);
+  if(FAILED(hr)){if(errors)printf("%s\n",static_cast<const char*>(errors->GetBufferPointer()));throw std::runtime_error("Bridge shader compilation failed");}
+ }
+ printf("PASS: all production bridge shaders compile.\n");
+ {
+  auto fixture=std::filesystem::temp_directory_path()/(L"MojaveAppearanceTest-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+  std::filesystem::create_directories(fixture/L"candidate/host64");
+  auto host=dlss_appearance::hostIni(fixture),prefs=dlss_appearance::preferences(fixture);
+  WritePrivateProfileStringW(L"GENERAL",L"PresetPath",L"keep.ini",host.c_str());
+  WritePrivateProfileStringW(dlss_appearance::section,L"NRSkinStructure",L"0.4",host.c_str());
+  const auto& skin=dlss_appearance::options()[5];
+  if(dlss_appearance::selected(fixture,skin)!=L"0.4")throw std::runtime_error("Appearance did not inherit helper value");
+  WritePrivateProfileStringW(dlss_appearance::section,L"NRSkinStructure",L"0.70",prefs.c_str());
+  if(dlss_appearance::selected(fixture,skin)!=L"0.70"||dlss_appearance::read(host,skin.key)!=L"0.4")throw std::runtime_error("Appearance staging modified running helper settings");
+  if(!dlss_appearance::applyBeforeLaunch(fixture)||dlss_appearance::read(host,skin.key)!=L"0.70")throw std::runtime_error("Appearance startup apply failed");
+  wchar_t retained[32]{};GetPrivateProfileStringW(L"GENERAL",L"PresetPath",L"",retained,32,host.c_str());
+  if(std::wstring(retained)!=L"keep.ini"||!dlss_appearance::read(host,L"NRGlobalTone").empty())throw std::runtime_error("Appearance altered unrelated or unsupported settings");
+  std::filesystem::remove(prefs);std::filesystem::remove(host);std::filesystem::remove(fixture/L"candidate/host64");std::filesystem::remove(fixture/L"candidate");std::filesystem::remove(fixture);
+  printf("PASS: appearance inherits helper values, stages edits, applies at startup, and preserves unrelated settings.\n");
+ }
  for(auto resolution: {std::pair<UINT,UINT>{1280,720},{2560,1440}}){
   engine::CameraSample before{{0,0,1000},{0,0,-1},{0,1,0},{1,0,0},{-500,500,281.25f,-281.25f,1,2000,true,{}},0,0,float(resolution.first),float(resolution.second),true};
   auto now=before;now.position.x+=40;now.right={0.98480775f,0.17364818f,0};now.up={-0.17364818f,0.98480775f,0};
@@ -16,6 +37,13 @@ int main(int argc,char** argv){
   for(float u:{.3f,.5f,.7f}){float px=now.width*u,py=now.height*.4f,z=.25f;engine::Vec origin,dir;now.ray(px,py,origin,dir);auto point=origin+dir*(now.frustum.nearPlane+z*(now.frustum.farPlane-now.frustum.nearPlane));float expectedX{},expectedY{};if(!before.project(point,expectedX,expectedY))throw std::runtime_error("Reference projection failed");float x=c.previousX[0]*px+c.previousX[1]*py+c.previousX[2]*z+c.previousX[3],y=c.previousY[0]*px+c.previousY[1]*py+c.previousY[2]*z+c.previousY[3];if(std::abs(x-expectedX)>.01f||std::abs(y-expectedY)>.01f)throw std::runtime_error("Motion reprojection differs from camera ray/project");}
  }
  printf("PASS: camera motion reprojection agrees with world-space projection at 720p and 1440p.\n");
+ for(unsigned w:{1280u,2560u}){
+  engine::CameraSample old{{0,0,1000},{0,0,-1},{0,1,0},{1,0,0},{-500,500,281.25f,-281.25f,1,2000,true,{}},0,0,float(w),float(w)*9/16,true};
+  auto current=old;current.position.x+=.125f;auto c=motionConstants(w,w*9/16,true,current,old);
+  float x=w*.5f,y=w*9.f/32.f;
+  float motion=c.previousX[0]*x+c.previousX[1]*y+c.previousX[2]*.5f+c.previousX[3]-x;
+  if(std::abs(motion-.125f*w/1000)>.001f)throw std::runtime_error("Wrong subpixel motion sign or scale");
+ }
  ComPtr<ID3D12Debug> debug;if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))debug->EnableDebugLayer();
  directory=std::filesystem::temp_directory_path();
  auto window=CreateWindowExW(0,L"STATIC",L"Mojave GPU bridge test",WS_POPUP,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -50,11 +78,11 @@ int main(int argc,char** argv){
  if(!exact)throw std::runtime_error("Pixel mismatch");
  printf("PASS: all input pixels transferred exactly from D3D9 to D3D12; resource ownership returned.\n");
  if(argc>1){directory=argv[1];mode=argc>2?atoi(argv[2]):1;Pipeline bridge;bridge.init(device.Get(),W,H);auto end=GetTickCount64()+45000;
-  while(!bridge.failed&&bridge.frame<120&&GetTickCount64()<end){check(device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,0xff123456,0.5f,0),"Clear frame");bridge.draw(device.Get());Sleep(5);}
+  while(!bridge.failed&&bridge.frame<120&&GetTickCount64()<end){bridge.camera={{float(bridge.frame)*.125f,0,1000},{0,0,-1},{0,1,0},{1,0,0},{-500,500,281.25f,-281.25f,1,2000,true,{}},0,0,float(W),float(H),true};check(device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,0xff123456,0.5f,0),"Clear frame");bridge.draw(device.Get());Sleep(5);}
   ComPtr<ID3D12InfoQueue> info;if(SUCCEEDED(bridge.gpu.As(&info))){for(UINT64 i=0;i<info->GetNumStoredMessages();++i){SIZE_T size{};info->GetMessage(i,nullptr,&size);std::vector<char> storage(size);auto m=reinterpret_cast<D3D12_MESSAGE*>(storage.data());info->GetMessage(i,m,&size);if(m->Severity<=D3D12_MESSAGE_SEVERITY_ERROR)printf("D3D12: %s\n",m->pDescription);}}
   if(bridge.failed||bridge.frame<120)throw std::runtime_error("Bridge roundtrip did not complete 120 frames");
   auto wait=CreateEventW(nullptr,FALSE,FALSE,nullptr);bridge.local->SetEventOnCompletion(bridge.serial,wait);if(WaitForSingleObject(wait,5000)!=WAIT_OBJECT_0)throw std::runtime_error("Bridge GPU timeout");bridge.channel->output->SetEventOnCompletion(bridge.frame,wait);if(WaitForSingleObject(wait,5000)!=WAIT_OBJECT_0)throw std::runtime_error("Host GPU timeout");CloseHandle(wait);
-  for(int slot=0;slot<2;slot++){auto tex=bridge.channel->textures[slot].Get();auto desc2=tex->GetDesc();gpu->GetCopyableFootprints(&desc2,0,1,0,&footprint,nullptr,nullptr,&bytes);allocator->Reset();list->Reset(allocator.Get(),nullptr);transition(list.Get(),tex,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);src.pResource=tex;dst.PlacedFootprint=footprint;list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);transition(list.Get(),tex,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);list->Close();queue->ExecuteCommandLists(1,lists);queue->Signal(fence.Get(),2+slot);auto ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);fence->SetEventOnCompletion(2+slot,ev);WaitForSingleObject(ev,5000);CloseHandle(ev);readback->Map(0,nullptr,&data);auto px=static_cast<unsigned*>(data);printf("Shared slot %d: %08X %08X %08X\n",slot,px[0],px[31],px[63]);readback->Unmap(0,nullptr);}
+  for(int slot:{0,1,3}){auto tex=bridge.channel->textures[slot].Get();auto desc2=tex->GetDesc();gpu->GetCopyableFootprints(&desc2,0,1,0,&footprint,nullptr,nullptr,&bytes);allocator->Reset();list->Reset(allocator.Get(),nullptr);transition(list.Get(),tex,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);src.pResource=tex;dst.PlacedFootprint=footprint;list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);transition(list.Get(),tex,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);list->Close();queue->ExecuteCommandLists(1,lists);queue->Signal(fence.Get(),2+slot);auto ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);fence->SetEventOnCompletion(2+slot,ev);WaitForSingleObject(ev,5000);CloseHandle(ev);readback->Map(0,nullptr,&data);auto px=static_cast<unsigned*>(data);if(slot==3){unsigned half=px[0]&65535;float mx=std::ldexp(1.f+float(half&1023)/1024,int((half>>10)&31)-15)*(half&32768?-1.f:1.f);if(std::abs(mx-.125f*W/1000)>.002f || (px[0]>>16)!=0)throw std::runtime_error("GPU motion vector sign, scale or subpixel precision incorrect");printf("PASS: GPU motion is current-to-previous pixels with subpixel precision.\n");}printf("Shared slot %d: %08X %08X %08X\n",slot,px[0],px[31],px[63]);readback->Unmap(0,nullptr);}
   ComPtr<IDirect3DSurface9> pixels;check(device->CreateOffscreenPlainSurface(W,H,pp.BackBufferFormat,D3DPOOL_SYSTEMMEM,&pixels,nullptr),"Test staging");check(device->GetRenderTargetData(back.Get(),pixels.Get()),"Read returned frame");D3DLOCKED_RECT lock{};check(pixels->LockRect(&lock,nullptr,D3DLOCK_READONLY),"Returned pixels");unsigned first=*static_cast<unsigned*>(lock.pBits);bool same=true;for(UINT y=0;y<H;y++)for(UINT x=0;x<W;x++)if((reinterpret_cast<unsigned*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]&0xffffff)!=0x123456){if(same)printf("Mismatch at %u,%u: %08X\n",x,y,reinterpret_cast<unsigned*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]);same=false;}printf("Returned first pixel: %08X\n",first);for(UINT x=0;x<W;x+=8)printf("x%u pixel %08X\n",x,reinterpret_cast<unsigned*>(lock.pBits)[x]);pixels->UnlockRect();if(mode==1&&!same)throw std::runtime_error("Transport changed colours");printf("PASS: 120 GPU frames returned through 64-bit helper, mode %d\n",mode);
  }
  DestroyWindow(window);return 0;

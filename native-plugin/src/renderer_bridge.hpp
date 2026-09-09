@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2026 SamGCoder
 #pragma once
+#include "experimental_rendering.hpp"
 #include <d3d9on12.h>
 #include <wrl/client.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <algorithm>
 namespace renderer_bridge {
 using Microsoft::WRL::ComPtr;
 inline std::filesystem::path directory;
 inline int mode{};
+inline int debugView{}; // 0 processed image, 1 motion, 2 rejection mask
 inline void record(const std::string& message){std::ofstream(directory/"bridge.log",std::ios::app)<<GetTickCount64()<<" "<<message<<"\n";}
 inline IDirect3D9* WINAPI create(UINT sdk){
  auto dll=LoadLibraryExW(L"d3d9.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -25,8 +28,10 @@ inline FARPROC WINAPI resolve(HMODULE module,LPCSTR name){
  return GetProcAddress(module,name);
 }
 inline void install(const std::filesystem::path& root){
+ if(!experimental_rendering::enabled){mode=0;debugView=0;return;}
  directory=root/L"runtime/dlss5";std::filesystem::create_directories(directory);
  mode=GetPrivateProfileIntW(L"bridge",L"mode",0,(directory/L"bridge.ini").c_str());
+ debugView=std::clamp(int(GetPrivateProfileIntW(L"bridge",L"debug_view",0,(directory/L"bridge.ini").c_str())),0,2);
  if(mode<1||mode>2){mode=0;return;}
  if(GetPrivateProfileIntW(L"experimental",L"rtx_remix",0,(root/L"runtime/settings.ini").c_str())||std::filesystem::exists(root.parent_path()/L"d3d9.dll")){
   record("Another renderer is enabled; independent bridge not installed");mode=0;return;

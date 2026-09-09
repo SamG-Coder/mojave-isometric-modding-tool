@@ -4,13 +4,13 @@
 struct ContextState {
  void* owner{};void* tile{};uint32_t target{},cell{};Vec point{};
  ScreenPoint anchor{};context_menu::Layout layout{};std::vector<context_menu::Row> rows;
- std::string title;
+ std::string title;bool pickupList{};size_t pickupPage{};std::vector<uint32_t> items;uint64_t refreshed{};
 } context;
 void closeContext(){
  contextOpen=false;
  auto hud=global(0x11D96C0);auto rootTile=hud?at<void*>(hud,4):nullptr;
  if(context.owner==rootTile&&context.tile)settings_menu::set(context.tile,0xFA3,0);
- context.rows.clear();
+ context.rows.clear();context.pickupList=false;context.items.clear();context.pickupPage=0;
 }
 void resetContext(){closeContext();context={};}
 bool validContext(){
@@ -18,9 +18,48 @@ bool validContext(){
  if(!context.target)return true;
  auto ref=reference(context.target);return ref&&!(at<uint32_t>(ref,8)&0x820)&&at<void*>(ref,0x40)==at<void*>(player(),0x40);
 }
+bool pickupVisible(void* ref){
+ if(!areaPickup(ref)||at<void*>(ref,0x40)!=at<void*>(player(),0x40))return false;
+ auto pos=at<Vec>(ref,0x30),feet=at<Vec>(player(),0x30);if(std::abs(pos.z-feet.z)>120||length(pos-feet)>600)return false;
+ auto render=at<void*>(ref,0x64);if(!render||!at<void*>(render,0x14))return false;
+ auto from=feet+Vec{0,0,65},to=pos+Vec{0,0,8};auto delta=to-from;Vec hit{};void* object{};
+ return length(delta)<1||!raycast(from,normalized(delta),hit,object)||length(hit-from)>=length(delta)-12||parentReference(object)==ref;
+}
+void pickupRows(){
+ context.rows.clear();
+ context.items.erase(std::remove_if(context.items.begin(),context.items.end(),[](uint32_t id){return !pickupVisible(reference(id));}),context.items.end());
+ size_t pages=std::max(size_t(1),(context.items.size()+3)/4);context.pickupPage=std::min(context.pickupPage,pages-1);
+ context.title="Pickup Area ("+std::to_string(context.items.size())+")";
+ for(size_t i=context.pickupPage*4;i<std::min(context.items.size(),context.pickupPage*4+4);++i){auto ref=reference(context.items[i]);context.rows.push_back({context_menu::Action::TakeItem,actionName(ref),context.items[i]});}
+ if(context.pickupPage)context.rows.push_back({context_menu::Action::Previous,"Previous page"});
+ if(context.pickupPage+1<pages)context.rows.push_back({context_menu::Action::Next,"Next page"});
+ if(!context.items.empty())context.rows.push_back({context_menu::Action::TakeAll,"Take all"});
+ context.rows.push_back({context_menu::Action::Cancel,"Close"});
+}
+void openPickupArea(){
+ context.pickupList=true;context.target=0;context.pickupPage=0;context.items.clear();
+ auto table=global(0x11C54C0);auto buckets=table?at<void**>(table,8):nullptr;auto count=table?at<uint32_t>(table,4):0;
+ auto feet=at<Vec>(player(),0x30);
+ if(buckets&&count<1000000)for(uint32_t i=0;i<count;++i)for(auto e=buckets[i];e;e=at<void*>(e,0)){
+  auto ref=at<void*>(e,8);if(!areaPickup(ref))continue;
+  if(context_menu::inPickupArea(at<Vec>(ref,0x30),context.point,feet)&&pickupVisible(ref))context.items.push_back(at<uint32_t>(ref,0xC));
+ }
+ std::sort(context.items.begin(),context.items.end(),[&](uint32_t a,uint32_t b){return length(at<Vec>(reference(a),0x30)-feet)<length(at<Vec>(reference(b),0x30)-feet);});
+ pickupRows();
+}
+void pickupTick(){
+ if(pickupQueue.empty()||pendingActivation||GetTickCount64()<pickupReadyAt)return;
+ if(!active()){pickupQueue.clear();return;}
+ if(moving||route.state==navigation::Search::State::Searching)return;
+ while(!pickupQueue.empty()){
+  auto id=pickupQueue.front();pickupQueue.erase(pickupQueue.begin());
+  if(!pickupVisible(reference(id)))continue;
+  nearbyDestination(id);note="Collecting area items ("+std::to_string(pickupQueue.size())+" remaining)";return;
+ }
+}
 void openContext(){
  closeContext();stop();Vec hit{};void* object{};
- if(!active()||!pick(cursorX,cursorY,hit,object,true))return;
+ if(!active()||!pick(cursorX,cursorY,hit,object))return;
  auto ref=parentReference(object);if(ref==player())ref=nullptr;
  if(ref&&at<void*>(ref,0x40)!=at<void*>(player(),0x40))ref=nullptr;
  context.target=ref?at<uint32_t>(ref,0xC):0;context.point=hit;
@@ -35,7 +74,8 @@ void updateContext(){
  if(!rootTile)return;
  if(!contextOpen){if(context.tile)settings_menu::set(context.tile,0xFA3,0);return;}
  if(!validContext()){closeContext();return;}
- if(auto ref=reference(context.target)){
+ if(context.pickupList){auto now=GetTickCount64();if(now-context.refreshed>=500){context.refreshed=now;pickupRows();}}
+ else if(auto ref=reference(context.target)){
   auto base=at<void*>(ref,0x20);unsigned kind=base?at<uint8_t>(base,4):0;
   context.rows=context_menu::actions(kind,(kind==0x2A||kind==0x2B)&&!combatActor(ref),combatActor(ref),true);
  }
@@ -63,7 +103,7 @@ void updateContext(){
  auto& l=context.layout;UITransform transform{width,height,ui.x,ui.y};int selected=l.hit(transform.toUI({cursorX,cursorY}));
  settings_menu::set(context.tile,0xFA1,l.x);settings_menu::set(context.tile,0xFA2,l.y);settings_menu::set(context.tile,0xFB1,l.width);settings_menu::set(context.tile,0xFB0,l.height());
  settings_menu::set(child("Background"),0xFB1,l.width);settings_menu::set(child("Background"),0xFB0,l.height());
- for(size_t i=0;i<6;++i){auto t=child(("Row"+std::to_string(i)).c_str());settings_menu::set(t,0xFA3,i<context.rows.size()?1.f:0.f);if(i>=context.rows.size())continue;
+ for(size_t i=0;i<8;++i){auto t=child(("Row"+std::to_string(i)).c_str());settings_menu::set(t,0xFA3,i<context.rows.size()?1.f:0.f);if(i>=context.rows.size())continue;
   settings_menu::text(t,(selected==int(i)?"> ":"  ")+context.rows[i].label);settings_menu::set(t,0xFA2,l.header+float(i)*l.rowHeight);settings_menu::set(t,0xFA9,selected==int(i)?255.f:190.f);
  }
  settings_menu::set(context.tile,0xFA3,1);
@@ -74,13 +114,19 @@ bool contextInput(bool click){
  auto ui=nativeUIExtent(context.owner);if(ui.x<=0||ui.y<=0){closeContext();return true;}
  int index=context.layout.hit(UITransform{width,height,ui.x,ui.y}.toUI({cursorX,cursorY}));
  if(index<0||size_t(index)>=context.rows.size()){closeContext();return true;}
- auto action=context.rows[index].action;auto id=context.target;auto point=context.point;auto ref=reference(id);closeContext();
+ auto row=context.rows[index];auto action=row.action;
+ if(action==context_menu::Action::PickupArea){openPickupArea();updateContext();return true;}
+ if(action==context_menu::Action::Previous||action==context_menu::Action::Next){if(action==context_menu::Action::Previous)--context.pickupPage;else ++context.pickupPage;pickupRows();updateContext();return true;}
+ if(action==context_menu::Action::TakeAll){auto items=context.items;closeContext();pickupQueue=std::move(items);pickupTick();return true;}
+ auto id=row.target?row.target:context.target;auto point=context.point;auto ref=reference(id);closeContext();
  switch(action){
+ case context_menu::Action::TakeItem:if(pickupVisible(ref)){pickupQueue={id};pickupTick();}break;
  case context_menu::Action::Activate:if(interactable(ref))nearbyDestination(id);break;
  case context_menu::Action::Attack:if(combatActor(ref))attackTarget(ref,bodyPoint(ref));break;
  case context_menu::Action::Vats:if(combatActor(ref)){stop();facePoint(bodyPoint(ref));run("TapControl 16");note="Opening native VATS";}break;
  case context_menu::Action::Move:{stop();Vec floor{};if(length(point-at<Vec>(player(),0x30))<=6000&&groundProbe(point,floor))planDestination(floor,0);else note="No walkable ground at this point";break;}
  case context_menu::Action::Cancel:break;
+ default:break;
  }
  return true;
 }
