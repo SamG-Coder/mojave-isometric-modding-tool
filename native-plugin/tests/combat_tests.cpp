@@ -41,5 +41,22 @@ int main(){
  check(!combat::keepCamera(true,true,true),"Explicit disable failed to release camera");
  for(uint32_t mode:{1u,2u,3u,4u})check(!combat::keepCamera(true,true,false,mode),"Pip-Boy camera not released during transition");
  check(combat::keepCamera(true,true,false,0),"Closing Pip-Boy did not restore isometric ownership");
+ combat::SightsGate sights;
+ check(!sights.ready(1000,true,false),"Submitted aim input treated as native aiming");
+ check(!sights.ready(1100,true,true),"Native aim had no settling interval");
+ check(sights.ready(1220,true,true),"Settled native aim blocked firing");
+ check(!sights.ready(1230,true,false),"Lost native aim allowed firing");
+ check(!sights.ready(1400,true,true),"Reacquired aim reused stale settling time");
+ check(sights.ready(1401,false,false),"Hip fire required native sights");
+ combat::ShotHold shot;shot.begin(1000);
+ check(shot.update(1016,false),"Queued shot released aim on following frame");
+ check(shot.update(1100,true),"Active firing animation released aim");
+ check(!shot.update(1250,false),"Finished native action retained aim");
+ shot.begin(2000);check(shot.update(3000,false),"Delayed native shot lost its aim");
+ check(!shot.update(3500,false),"Rejected shot never released aim");
+ for(engine::Vec endpoint: {engine::Vec{100,200,75},engine::Vec{-800,1500,400},engine::Vec{0,-400,-20}}){
+  engine::Vec origin{20,10,70};auto expected=engine::normalized(endpoint-origin);
+  check(engine::length(combat::direction(combat::aim(origin,endpoint))-expected)<.0001f,"Aim laser direction differs from actor yaw/pitch convention");
+ }
  std::cout<<"World aim and combat gating checks passed.\n";
 }

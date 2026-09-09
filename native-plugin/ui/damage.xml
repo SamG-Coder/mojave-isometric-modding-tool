@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only; Copyright 2026 SamGCoder -->
+<text name="MojaveIsoDamage">
+ <visible>0</visible><x>0</x><y>0</y><depth>3</depth><target>0</target>
+ <font>3</font><string>0</string><alpha>255</alpha>
+ <red>255</red><green>180</green><blue>64</blue>
+ <justify>1</justify><wrapwidth>160</wrapwidth>
+</text>

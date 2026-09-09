@@ -166,3 +166,43 @@ User requested the complete Pip-Boy model and its close-up camera instead of the
 Only the first-person upper-body/left-hand/right-hand biped slot models are temporarily hidden while Pip-Boy is active. The skeleton and Pip-Boy slot are explicitly excluded. Each slot's prior hidden bit is restored when it closes or the mod is disabled, checking the current slot model identity before restoration.
 
 Live process 22640, dedicated MojaveIsoLabTest: native TapControl 14 opened mode 3 with camera_blend=0. Captured images show the full device, Stats/Items/Data physical buttons, native Stats page and visible cursor, with no surrounding hand/arm. Cursor position changed between captures. This is visual verification, not proof of every page action or ESC stacking. Test input did not confirm the close transition, so repeated open/close still needs checking. Release build, camera ownership tests (all nonzero Pip-Boy modes release ownership, zero restores it), 1,176 projection checks and wheel/menu handoff tests pass. Built DLL matches installed DLL in the running test session. Changes remain uncommitted.
+
+## Single-shot aiming lifetime correction
+
+Non-actor shots previously cleared AttackOrder immediately after TapControl, allowing the next update to restore prior pitch or follow a moved Alt cursor before the native firing animation/projectile release. Single shots now retain the clicked point and sights through an observed native attack action (BaseProcess::GetCurrentAction virtual slot 3E4, actions 2–5), with a 150 ms minimum after submission and a 1.5 second timeout if the game does not produce/finish the action. This does not prove that a shot was accepted. Explicit cancellation and menu handoff still release ownership immediately. No duplicate shot is submitted while waiting.
+
+An 80 ms alignment window precedes the first ranged attack after acquisition/readiness, allowing animated muzzle transforms to respond to actor rotation. The clicked non-actor reference is retained for line-of-fire checks, so the target object itself is accepted as the first collision. Single-shot diagnostics record requested world point, muzzle position and actor angles; these are input diagnostics, not measured projectile trajectories. Spread and game hit logic remain native.
+
+Release build and tests pass for retaining aim on the next frame and during native action, action completion, delayed/rejected inputs and bounded timeout. Existing camera/follower checks pass. The bottle quest has not yet been reproduced and successful bottle hits are not live-verified. Do not attribute all previous misses to this timing bug without live projectile evidence.
+
+## Floating player damage numbers
+
+Character and Creature DoHealthDamage virtual slots (+4B8, runtime tables 1086A6C/10870AC) are wrapped without changing their arguments or results. When the source is the player, the wrapper samples current Health via ActorValueOwner (+A4, GetActorValue slot 3, AV 10) immediately before and after the native call. The resulting health loss is clamped to remaining positive health, ignoring healing, unchanged/invalid values and losses below 0.05. Other attackers and player self-damage are excluded. Damage routes that bypass these native methods or omit player source attribution are not covered.
+
+A bounded queue of 24 popups stores world positions rather than retaining actor pointers. Native TileText uses the HUD activation font and colours, projects above the target and rises/fades over 1.4 seconds. Menus suppress display; old popups expire and load events clear them. No UI hit targets are added. Asset: native-plugin/ui/damage.xml, deployed to Data/menus/MojaveIso/damage.xml (install this alongside interaction.xml on a fresh installation).
+
+Release DLL build and dedicated damage tests pass for ordinary damage, capped overkill, already-dead targets, healing, unchanged/invalid health and fade lifetime. The DLL and XML are installed while the game is closed. Live damage callback and visual popup behavior are not yet verified; do not treat calculation tests as a successful in-game hit demonstration.
+
+## Alt aim diagnostic line
+
+While Alt aiming, a HUD-coloured line projects from the animated weapon muzzle (head fallback) along the actor yaw/pitch used by combat. A main-thread collision ray truncates it at the first hit; an early obstruction has a red endpoint cross and the intended point has a faint cross. Menus, camera dragging and stale aim suppress the line. This is a diagnostic overlay, not a physical laser or measured projectile trajectory; native spread remains in effect. Both endpoints must project into the viewport.
+
+Release build and combat direction round-trip tests pass. Live visual placement and collision behaviour are not yet verified.
+
+## Baseline xNVSE held input and native aiming acknowledgement
+
+Root cause found in source and installed plugin inventory: HoldControl/ReleaseControl are JIP commands, while this installation contains only MojaveIsoNative.dll. Replaced those calls with baseline xNVSE HoldKey/ReleaseKey using configured keyboard and mouse bindings. Captured bindings are retained until release, including cancellation and menu handoff. This also repairs the same missing-command path for automatic fire and melee pulses. No JIP installation is required.
+
+Alt hover now requests distance-based aiming for ranged weapons. Distant attack submission checks BaseProcess::GetIsAiming (virtual slot 404, verified against local JIP and xNVSE headers) continuously for 120 ms before the existing muzzle alignment interval. If the engine does not acknowledge aiming, the attack waits and status reports that reason rather than submitting hip fire. Aiming status distinguishes requested input from actual native aim. This is an aiming-state check, not a direct measurement of projectile spread or a guarantee of iron-sight animation completion. Camera ownership is unchanged.
+
+Release build and combat tests pass, including rejected aim input, observed-state settling, loss/reacquisition and close-range hip fire. Runtime input/aiming and hit accuracy still require in-game verification.
+
+## Projectile launch direction and native camera convergence
+
+Live status from the user's last session reported aim_down_sights_requested=true and aim_down_sights_active=true, so the persistent misses were not explained by failure to enter native aiming. Inspected the unpacked 1.4.0.525 runtime firing path. Weapon fire at 5245BD calls projectile creation 9BCA60 with origin, heading/pitch and separate native random spread. Projectile initialization subsequently calls player convergence 965620 from 9BD9E2, passing projectile rotation/position by pointer; that routine reads native camera coordinates at 11F426C.
+
+A guarded launch-call wrapper now computes direction from the actual launch position to the ordered world point and adds the native per-projectile spread. A thread-local scope suppresses only the later camera-convergence call during these corrected launches. Both call targets are validated before installation. Scope: active isometric player orders, weapon types 3–8, and non-forced-hit launch arguments. Other launches pass through. Position, weapon, ammo, damage, spread arguments and native projectile creation remain unchanged. No post-spawn projectile steering is used.
+
+Live evidence, diagnostic varmint rifle: initial launch-only correction sent yaw/pitch 3.11667/0.256097, but creation returned a projectile at 2.94804/0.432341, roughly ten degrees off each axis. After suppressing the scoped convergence step, process 11996 returned 3.11614/0.255497, exactly matching the corrected input. A second direction returned 2.34405/0.283479, also matching. Native spread offsets were retained and nonzero. Release build and combat tests pass; running installed DLL SHA256 matches build. This verifies projectile initialization direction, not the bottle quest completion or every weapon type.
+
+Testing used MojaveIsoLabTest and a new dedicated MojaveIsoAimDiagnostic save with a test rifle/ammunition; no user save slot was overwritten. Projectile launch diagnostics record original/corrected angles, spread, launch origin, ordered target and resulting projectile rotation. Native collision/damage and all alternate weapons still need gameplay coverage.
