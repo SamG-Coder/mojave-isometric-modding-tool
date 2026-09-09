@@ -28,5 +28,18 @@ int main(){
  check(!combat::refreshPursuit(1250,1000,5,1000,true,false),"Minor target movement restarted pursuit");
  check(combat::refreshPursuit(1250,1000,0,1000,false,false),"Ended approach delayed fresh pursuit");
  check(!combat::refreshPursuit(1250,1000,0,1000,false,true),"Unchanged pending search restarted");
+ check(combat::meleeDistance({0,0,0},{60,0,0})==60,"Melee range used weapon height");
+ check(combat::meleeDistance({0,0,0},{60,0,200})==200,"Melee attacked across floors");
+ check(combat::useAimDownSights(600,false,false),"Distant ranged attack did not aim");
+ check(!combat::useAimDownSights(300,false,true),"Close ranged attack retained sights");
+ check(combat::useAimDownSights(450,false,true)&&!combat::useAimDownSights(450,false,false),"Aim threshold oscillates");
+ check(!combat::useAimDownSights(600,true,true),"Melee activated aim/block control");
+ // Menu, dialogue, furniture and native POV are deliberately not ownership inputs.
+ check(combat::keepCamera(true,true,false),"Loaded world lost camera ownership");
+ check(!combat::keepCamera(true,false,false),"Missing world retained camera");
+ check(!combat::keepCamera(false,true,false),"Disabled mod retained camera");
+ check(!combat::keepCamera(true,true,true),"Explicit disable failed to release camera");
+ for(uint32_t mode:{1u,2u,3u,4u})check(!combat::keepCamera(true,true,false,mode),"Pip-Boy camera not released during transition");
+ check(combat::keepCamera(true,true,false,0),"Closing Pip-Boy did not restore isometric ownership");
  std::cout<<"World aim and combat gating checks passed.\n";
 }

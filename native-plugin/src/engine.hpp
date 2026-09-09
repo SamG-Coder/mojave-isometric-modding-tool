@@ -39,6 +39,7 @@ inline bool raycast(Vec origin,Vec direction,Vec& hit,void*& object){
     if(!std::isfinite(fraction)||fraction<0||fraction>=0.99999f)return false;
     hit=origin+direction*(distance*fraction);return true;
 }
+inline uint32_t pipboyMode(){auto ui=global(0x11D8A80);return ui?at<uint32_t>(ui,0x4BC):0;}
 inline bool dialogue(){return reinterpret_cast<bool*>(0x11F308F)[1009];}
 // Resolve collision geometry through BSFadeNode to its owning reference (JIP adapter).
 inline void* parentReference(void* node){
@@ -58,7 +59,7 @@ inline bool interactable(void* ref){
     auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
     auto base=at<void*>(ref,0x20);if(!base)return false;
     auto kind=at<uint8_t>(base,4);
-    return kind==0x1C||kind==0x1B||kind==0x2A||kind==0x2B||kind==0x15||kind==0x16||kind==0x17;
+    return kind==0x27||kind==0x1C||kind==0x1B||kind==0x2A||kind==0x2B||kind==0x15||kind==0x16||kind==0x17;
 }
 inline bool activate(void* ref){return reinterpret_cast<bool(__thiscall*)(void*,void*,uint32_t,uint32_t,uint32_t)>(0x573170)(ref,player(),0,0,1);}
 
