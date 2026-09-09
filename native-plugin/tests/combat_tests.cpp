@@ -50,6 +50,9 @@ int main(){
  check(combat::meleeHeading({0,0,0},{1,-1,40},1.2f,.016f)==1.2f,"Overlapping melee target spun the player");
  check(std::abs(combat::meleeHeading({0,0,0},{100,0,0},0,.016f))<.101f,"Melee rotation exceeded its rate limit");
  check(combat::meleeHeading({0,0,0},{-1,-100,0},3.13f,.016f)>3.13f,"Melee yaw wrap took the long rotation");
+ check(!combat::meleeFacing({0,0,0},{100,0,0},0),"Melee attack accepted while facing sideways");
+ check(combat::meleeFacing({0,0,0},{0,100,0},0),"Aligned melee attack blocked");
+ check(combat::meleeFacing({0,0,0},{1,1,0},3),"Overlapping target requires unstable heading");
  combat::SightsGate sights;
  check(!sights.ready(1000,true,false),"Submitted aim input treated as native aiming");
  check(!sights.ready(1100,true,true),"Native aim had no settling interval");

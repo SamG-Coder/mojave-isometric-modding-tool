@@ -24,7 +24,7 @@
 #include "native_navigation.hpp"
 using namespace engine;
 namespace {
-struct DamageNumber {Vec position;float amount;uint64_t started;};
+struct DamageNumber {Vec position;float amount;uint64_t started;uint32_t actorId;};
 std::mutex damageMutex;std::vector<DamageNumber> damageNumbers;uint64_t damageNumberCount{},damageHookCalls{},damagePlayerHits{};
 struct AttackOrder {combat::ShotHold shot;combat::SightsGate sightsGate;uint32_t id{},hitRef{};Vec point{},pursuitTarget{};void* cell{};bool ordered{},single{},held{},sights{};uint64_t started{},lastFire{},lastRepath{},lastReady{},meleeReleaseAt{},aimReadyAt{};} attack;
 struct AimLine {Vec origin{},end{},target{};bool valid{},blocked{};} aimLine;
@@ -325,7 +325,7 @@ template<int Index> void __fastcall healthDamageHook(void* actor,void*,void* sou
     if(loss<.05f)return;
     std::lock_guard<std::mutex> lock(damageMutex);
     if(damageNumbers.size()>=24)damageNumbers.erase(damageNumbers.begin());
-    damageNumbers.push_back({point,loss,GetTickCount64()});++damageNumberCount;
+    damageNumbers.push_back({point,loss,GetTickCount64(),id});++damageNumberCount;
 }
 void installHooks(){
     void* prior{};
@@ -363,7 +363,7 @@ void installHooks(){
         }
     }
 }
-bool pick(float x,float y,Vec& hit,void*& hitObject){
+bool pick(float x,float y,Vec& hit,void*& hitObject,bool aimSelection=false){
     if(!active()||!camera||cameraBlend<0.999f)return false;
     Vec origin{},ray{};
     if(!displayCamera.ray(x,y,origin,ray))return false;
@@ -376,7 +376,16 @@ bool pick(float x,float y,Vec& hit,void*& hitObject){
     bool covered=indoors;
     if(!covered)covered=raycast(feet+Vec{0,0,110},{0,0,1},ceiling,ceilingObject)&&ceiling.z-feet.z<600;
     if(covered)origin=rayBelowHeight(origin,ray,feet.z+100);
-    return raycast(origin,ray,hit,hitObject);
+    if(!raycast(origin,ray,hit,hitObject))return false;
+    // Aim preview and attack clicks use the same current-floor selection.
+    // Preserve directly picked actors; skip high cover when looking down at a room.
+    if(aimSelection&&hit.z>feet.z+110){
+        auto ref=parentReference(hitObject);auto kind=ref?at<uint8_t>(ref,4):0;
+        if(kind!=0x3B&&kind!=0x3C){Vec belowHit{};void* belowObject{};
+            if(raycast(rayBelowHeight(origin,ray,feet.z+100),ray,belowHit,belowObject)){hit=belowHit;hitObject=belowObject;}
+        }
+    }
+    return true;
 }
 bool groundProbe(Vec guess,Vec& ground){
     void* object{};if(!raycast(guess+Vec{0,0,44},{0,0,-1},ground,object))return false;
@@ -577,7 +586,7 @@ void refreshAimLine(){
 void releaseAttack(){if(attack.held){holdMappedControl(4,false);attack.held=false;}attack.meleeReleaseAt=0;}
 void setSights(bool value){value=value&&ownedControls[1];if(value==attack.sights)return;holdMappedControl(6,value);attack.sights=value;attack.sightsGate.reset();}
 void attackClick(float x,float y){
-    Vec point{};void* object{};if(!pick(x,y,point,object))return;
+    Vec point{};void* object{};if(!pick(x,y,point,object,true))return;
     auto ref=parentReference(object);cancelCombat();stopMovement();
     attack={};attack.hitRef=ref?at<uint32_t>(ref,0xC):0;attack.id=combatActor(ref)?attack.hitRef:0;
     attack.point=attack.id?bodyPoint(ref):point;attack.single=!attack.id;
@@ -589,7 +598,7 @@ void combatTick(){
     if(!active()||!player()||at<uint32_t>(player(),0x108)==1||at<uint32_t>(player(),0x108)==2){cancelCombat();return;}
     if(!attack.ordered){
         releaseAttack();bool wantSights=false;
-        if(altAiming&&!lastMiddle){Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object)){
+        if(altAiming&&!lastMiddle){Vec hit{};void* object{};if(pick(cursorX,cursorY,hit,object,true)){
             auto ref=parentReference(object);Vec point=combatActor(ref)?bodyPoint(ref):hit;facePoint(point);
             auto process=at<void*>(player(),0x68);auto entry=process&&at<uint8_t>(process,0x28)<=1?at<void*>(process,0x114):nullptr;
             auto weapon=entry?at<void*>(entry,8):nullptr;
@@ -623,7 +632,7 @@ void combatTick(){
         run("TapControl 7");attack.lastReady=now;
     }
     auto pos=at<Vec>(player(),0x30),eye=firingOrigin();float targetDistance=length(attack.point-eye);
-    if(melee&&victim)targetDistance=combat::meleeDistance(pos,at<Vec>(victim,0x30));
+    if(melee)targetDistance=combat::meleeDistance(pos,victim?at<Vec>(victim,0x30):attack.point);
     if(melee)eye=pos+Vec{0,0,65};
     bool clear=shotClear(eye,attack.point,victim?victim:reference(attack.hitRef));
     if(!combat::canEngage(targetDistance,range,clear,active(),!victim||combatActor(victim))){
@@ -660,10 +669,15 @@ void combatTick(){
     if(!melee&&now-attack.aimReadyAt<80){note="Aligning weapon with clicked target";return;}
     // Submit mapped native input, preserving ammunition, reloads and animation gates.
     if(melee){
-        // Give native melee input a short press/release rather than a single-frame
-        // tap. Release before a power-attack hold; native animation gates still apply.
-        if(!attack.held&&(!attack.lastFire||now-attack.lastFire>=500)){
-            holdMappedControl(4,true);attack.held=true;attack.meleeReleaseAt=now+70;attack.lastFire=now;++attackRequests;if(attack.single)attack.shot.begin(now);
+        // Wait for native recovery and facing; retry a rejected press with a
+        // release interval. Stop holding as soon as a native swing is observed.
+        int16_t action=reinterpret_cast<int16_t(__thiscall*)(void*)>(at<void**>(process,0)[0x3E4/4])(process);
+        bool swinging=action>1&&action<6;
+        if(swinging){releaseAttack();note="Native melee swing in progress";return;}
+        Vec facingPoint=victim?at<Vec>(victim,0x30):attack.point;
+        if(!combat::meleeFacing(pos,facingPoint,at<float>(player(),0x2C))){releaseAttack();note="Turning toward melee target";return;}
+        if(!attack.held&&(!attack.lastFire||now-attack.lastFire>=300)){
+            holdMappedControl(4,true);attack.held=true;attack.meleeReleaseAt=now+180;attack.lastFire=now;++attackRequests;if(attack.single)attack.shot.begin(now);
         }
     }
     else if(automatic&&!attack.single){if(!attack.held){holdMappedControl(4,true);attack.held=true;++attackRequests;}}
@@ -773,12 +787,17 @@ void updateDamageNumbers(){
         if(show&&!labels[i]){labels[i]=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,"menus\\MojaveIso\\damage.xml");log(labels[i]?"Damage popup tile created":"Damage popup tile failed to load");}
         auto label=labels[i];if(!label)continue;set(label,0xFA3,0);if(!show)continue;
         auto n=visible[i];float age=float(now-n.started)/1000.f,x{},y{};
-        if(!renderCamera.project(n.position,x,y))continue;y-=age*32;
+        Vec anchor=n.position;
+        if(auto ref=reference(n.actorId)){if(at<void*>(ref,0x40)==at<void*>(player(),0x40)){
+            auto feet=at<Vec>(ref,0x30);anchor=feet+Vec{0,0,105};
+            if(auto head=namedBone(actorRoot(ref),"Bip01 Head")){auto p=at<Vec>(head,0x8C);if(validActorPoint(p,feet))anchor=p+Vec{0,0,24};}
+        }}
+        if(!renderCamera.project(anchor,x,y))continue;y-=18+age*32;
         if(x<0||y<0||x>=width||y>=height)continue;
         std::ostringstream value;value<<std::fixed<<std::setprecision(n.amount<10?1:0)<<n.amount;
         auto text=tileValue(label,0xFC4);if(text)reinterpret_cast<void(__thiscall*)(void*,const char*,bool)>(0xA0A300)(text,value.str().c_str(),true);
         for(uint32_t trait:{0xFB9u,0xFB2u,0xFB3u,0xFB4u})set(label,trait,get(nativeText,trait,trait==0xFB9?3.f:255.f));
-        set(label,0xFA1,x*uw/width);set(label,0xFA2,y*uh/height);
+        set(label,0xFA1,x*uw/width-80.f);set(label,0xFA2,y*uh/height);
         set(label,0xFA9,255*damage_numbers::opacity(age));set(label,0xFA3,1);
     }
 }

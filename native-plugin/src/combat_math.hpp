@@ -34,6 +34,10 @@ inline float meleeHeading(engine::Vec feet,engine::Vec target,float current,floa
  float step=6.283185307f*std::clamp(dt,0.f,.05f);
  return current+std::clamp(delta,-step,step);
 }
+inline bool meleeFacing(engine::Vec feet,engine::Vec target,float yaw){
+ auto d=target-feet;if(std::hypot(d.x,d.y)<12.f)return true;
+ return std::abs(std::remainder(std::atan2(d.x,d.y)-yaw,6.283185307f))<.436332313f;
+}
 inline float meleeDistance(engine::Vec feet,engine::Vec targetFeet){auto d=targetFeet-feet;return std::max(std::hypot(d.x,d.y),std::abs(d.z));}
 inline bool useAimDownSights(float distance,bool melee,bool alreadyAiming){return !melee&&distance>(alreadyAiming?400.f:500.f);}
 inline bool keepCamera(bool enabled,bool loadedWorld,bool disabling,uint32_t pipboy=0){return enabled&&loadedWorld&&!disabling&&pipboy==0;}
