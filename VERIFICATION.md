@@ -289,3 +289,10 @@ Melee now waits until facing within 25 degrees and until an existing native atta
 - Added inventory pickup and plant activation to the existing whitelist; native activation handles scripts, ownership and locks. Full-name component offsets for supported forms were checked against local JIP's component table.
 - Release plugin, context and combat tests passed. Context tests cover action selection, corpses, furniture/pickups, ground/scenery, screen-corner placement and every row hitbox across four resolutions and three UI scales. XML parsed successfully with the game's HUD colour entity substituted for the parser. Native in-game appearance and dispatch have not yet been live verified.
 - DLL and context.xml installed while FalloutNV was closed, with a previous DLL backup. Build/installed hashes match; pending DLL synchronized for Steam startup.
+
+## Full-height door picking
+
+- Current changes through the context menu were committed and pushed as e2be7b1 before this follow-up fix.
+- Picking now tests the uncut screen ray first and retains its direct interaction hit when the reference is in the player's cell and its origin is within 150 units of the player's floor. This avoids removing a door's upper portion by beginning the ray at chest height. The Alt/context high-cover filter also preserves these interactions.
+- Roof/scenery hits and upstairs references still follow the existing floor-clipping logic. The test uses reference height to classify the floor, not the height of the clicked point. No interaction-distance or native activation changes.
+- Release plugin, camera and context tests passed, including an upper-door ray intersection that chest-height clipping would start behind, plus roof, upstairs, wrong-cell and invalid-height exclusions. DLL installed with backup while the game was closed; hashes match. User confirmation on the affected door remains outstanding. This follow-up is not yet committed.

@@ -70,6 +70,11 @@ inline CameraSample presentationCamera(CameraSample camera,float sourceWidth,flo
     float sx=outputWidth/sourceWidth,sy=outputHeight/sourceHeight;
     camera.x*=sx;camera.y*=sy;camera.width*=sx;camera.height*=sy;return camera;
 }
+// A tall current-floor interaction (door, terminal, actor) is not roof cover.
+// Use its reference origin to determine floor, not the height of the ray hit.
+inline bool preserveInteractionHit(bool interactable,bool sameCell,float referenceHeight,float playerHeight){
+ return interactable&&sameCell&&std::isfinite(referenceHeight)&&std::isfinite(playerHeight)&&std::abs(referenceHeight-playerHeight)<=150.f;
+}
 struct ScreenPoint {float x{},y{};};
 inline ScreenPoint resizeCursor(ScreenPoint p,float oldWidth,float oldHeight,float newWidth,float newHeight){
     if(newWidth<=0||newHeight<=0)return {};

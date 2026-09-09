@@ -80,6 +80,19 @@ int main(){
     }
     check(nativeMenuExtent(2560,1440,0).x==0,"Uninitialized converter treated as pixel UI");
     check(nativeMenuExtent(2560,1440,NAN).x==0,"Invalid converter accepted");
+    {
+        Vec doorRay=normalized(Vec{1,0,-1}),start{0,0,300};
+        auto clipped=rayBelowHeight(start,doorRay,100);
+        check(clipped.x>100,"Door clipping regression geometry incorrect");
+        auto doorHit=start+doorRay*((100-start.x)/doorRay.x);
+        check(doorHit.z>110&&preserveInteractionHit(true,true,0,0),"Upper door hit replaced by chest-height ray");
+    }
+    check(preserveInteractionHit(true,true,0,0),"Current-floor door discarded as high cover");
+    check(preserveInteractionHit(true,true,120,0),"Raised door threshold discarded");
+    check(!preserveInteractionHit(true,true,300,0),"Upstairs interaction bypasses roof clipping");
+    check(!preserveInteractionHit(false,true,0,0),"Roof/scenery bypasses cover clipping");
+    check(!preserveInteractionHit(true,false,0,0),"Other-cell interaction preserved");
+    check(!preserveInteractionHit(true,true,NAN,0),"Invalid reference height preserved");
     check(!presentationCamera(c,0,720,2560,1440).valid,"Unknown render surface accepted");
     std::cout<<"Resolution, intermediate surface, letterbox, UI hitbox and resize checks passed.\n";
     std::cout<<tests<<" camera round trips passed across pitch, yaw, projection and viewport offsets.\n";

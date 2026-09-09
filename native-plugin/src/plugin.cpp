@@ -402,11 +402,19 @@ bool pick(float x,float y,Vec& hit,void*& hitObject,bool aimSelection=false){
     bool indoors=cell&&(at<uint8_t>(cell,0x24)&1);
     bool covered=indoors;
     if(!covered)covered=raycast(feet+Vec{0,0,110},{0,0,1},ceiling,ceilingObject)&&ceiling.z-feet.z<600;
-    if(covered)origin=rayBelowHeight(origin,ray,feet.z+100);
-    if(!raycast(origin,ray,hit,hitObject))return false;
+    auto currentFloorInteraction=[&](void* object){
+        auto ref=parentReference(object);
+        return ref&&preserveInteractionHit(interactable(ref),at<void*>(ref,0x40)==cell,at<Vec>(ref,0x30).z,feet.z);
+    };
+    // Test the full visible ray first: chest-height clipping otherwise removes
+    // the upper half of doors before hover/context selection can identify them.
+    bool found=raycast(origin,ray,hit,hitObject);
+    if(found&&currentFloorInteraction(hitObject))return true;
+    if(covered){origin=rayBelowHeight(origin,ray,feet.z+100);found=raycast(origin,ray,hit,hitObject);}
+    if(!found)return false;
     // Aim preview and attack clicks use the same current-floor selection.
     // Preserve directly picked actors; skip high cover when looking down at a room.
-    if(aimSelection&&hit.z>feet.z+110){
+    if(aimSelection&&hit.z>feet.z+110&&!currentFloorInteraction(hitObject)){
         auto ref=parentReference(hitObject);auto kind=ref?at<uint8_t>(ref,4):0;
         if(kind!=0x3B&&kind!=0x3C){Vec belowHit{};void* belowObject{};
             if(raycast(rayBelowHeight(origin,ray,feet.z+100),ray,belowHit,belowObject)){hit=belowHit;hitObject=belowObject;}
