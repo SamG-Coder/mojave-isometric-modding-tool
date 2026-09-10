@@ -22,3 +22,11 @@ The opening now retains native first-person/cinematic camera ownership through V
 Mod movement, context actions, pickup, attacks, aim indicators and camera toggling cannot bypass the opening guard. Native movement and combat restrictions remain respected after the initial handoff, including subsequent scripted tutorial dialogue. Native dialogue choices and character-creation controls remain available.
 
 Regression checks cover gaps between opening speech lines, appearance-menu stages, intro-save loading, ordinary saves, the stage-55 handoff and independent movement/combat flags. Plugin build and tests pass; the corrected opening still needs a fresh live run.
+
+## Native gameplay cursor
+
+Replaced the D3D rectangle arrow and aiming crosshair with the game's existing cursor TileImage and texture. The plugin submits that node through the native UI camera and shader accumulator during active isometric gameplay. The arrow turns red during Alt aiming or a queued attack, including a single shot at the ground.
+
+Cursor position, colour and visibility changes are scoped to the additional render pass and restored immediately afterward. Menus, dialogue, character creation and disabled isometric mode keep native cursor ownership. No replacement cursor texture is distributed.
+
+Validation: Release plugin build, camera, combat and context tests pass. Live Steam gameplay captures verify the native arrow, red colouring during a queued ground shot, and restoration to amber after the shot. Full opening/dialogue playthrough remains pending.

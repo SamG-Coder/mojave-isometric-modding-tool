@@ -1010,6 +1010,43 @@ void nativeInteraction(){
 #include "remix_setup.hpp"
 using RenderInterface=void(__thiscall*)(void*,void*,bool);
 RenderInterface originalRenderInterface{};
+// Borrow the engine's cursor for this UI render only. Menus, dialogue and other
+// mods retain the original tile, colour and visibility outside this call.
+struct NativeCursorFrame {
+    void* tile{};void* node{};void* cursorRoot{};void* material{};
+    std::array<float,4> colour{};uint32_t nodeFlags{},rootFlags{};Vec local{};
+    void updateNode(){
+        const std::array<uint32_t,3> update{};
+        reinterpret_cast<void(__thiscall*)(void*,const void*,uint32_t)>(at<void**>(node,0)[0xA4/4])(node,update.data(),0);
+    }
+    NativeCursorFrame(void* ui,bool show){
+        if(!show||!ui||width<=0||height<=0)return;
+        tile=at<void*>(ui,0x28);node=tile?at<void*>(tile,0x2C):nullptr;
+        cursorRoot=at<void*>(ui,0x84);
+        if(!node||!cursorRoot){tile=nullptr;return;}
+        nodeFlags=at<uint32_t>(node,0x30);rootFlags=at<uint32_t>(cursorRoot,0x30);
+        local=at<Vec>(node,0x58);
+        auto extent=nativeUIExtent(nullptr);auto p=UITransform{width,height,extent.x,extent.y}.toUI({cursorX,cursorY});
+        at<Vec>(node,0x58)={p.x-extent.x*.5f,local.y,extent.y*.5f-p.y};
+        at<uint32_t>(node,0x30)&=~1u;at<uint32_t>(cursorRoot,0x30)&=~1u;
+        updateNode();
+        // TileShaderProperty::overlayColor (JIP 1.4.0.525 layout). Change the
+        // material for this draw only, without altering UI expression bindings
+        // or queuing tile updates which would bleed into the next menu frame.
+        material=reinterpret_cast<void*(__thiscall*)(void*)>(at<void**>(tile,0)[8])(tile);
+        if(material){
+            colour=at<std::array<float,4>>(material,0x68);
+            if(altAiming||attack.ordered)at<std::array<float,4>>(material,0x68)={1.f,.12f,.08f,colour[3]};
+        }
+    }
+    ~NativeCursorFrame(){
+        if(!tile)return;
+        if(material)at<std::array<float,4>>(material,0x68)=colour;
+        at<Vec>(node,0x58)=local;
+        at<uint32_t>(node,0x30)=nodeFlags;at<uint32_t>(cursorRoot,0x30)=rootFlags;
+        updateNode();
+    }
+};
 void __fastcall renderInterfaceHook(void* ui,void*,void* culler,bool pipboyVisible){
     auto renderer=global(0x11F4748);auto device=renderer?at<IDirect3DDevice9*>(renderer,0x288):nullptr;
     bridgeImageVisible=false;
@@ -1022,15 +1059,27 @@ void __fastcall renderInterfaceHook(void* ui,void*,void* culler,bool pipboyVisib
         }
     }else renderer_bridge::suspend();
     originalRenderInterface(ui,culler,pipboyVisible);
+    NativeCursorFrame cursor(ui,active()&&!pipboyVisible&&at<void*>(ui,4)&&at<void*>(ui,0x8C));
+    if(cursor.tile){
+        // The gameplay UI pass omits the cursor. Submit the existing engine node
+        // through its own UI camera and shader accumulator after the HUD.
+        auto scene=at<void*>(ui,4);auto accumulator=at<void*>(ui,0x8C);
+        auto uiCamera=reinterpret_cast<void*(__thiscall*)(void*)>(0x6629F0)(scene);
+        reinterpret_cast<void(__thiscall*)(void*,int)>(0xC4F270)(culler,1);
+        reinterpret_cast<void(__thiscall*)(void*,void*)>(0x4A0FD0)(culler,accumulator);
+        reinterpret_cast<void(__cdecl*)(void*,void*,void*)>(0xB6BEE0)(uiCamera,cursor.node,culler);
+        reinterpret_cast<void(__cdecl*)(void*,void*,int)>(0xB6C0D0)(uiCamera,accumulator,0);
+        reinterpret_cast<void(__thiscall*)(void*,void*)>(0x4A0FD0)(culler,nullptr);
+        reinterpret_cast<void(__thiscall*)(void*)>(0xC4F2D0)(culler);
+    }
 }
 void installInterfaceBridge(){
-    if(!renderer_bridge::mode)return;
     // New Vegas 1.4.0.525 pre-interface call, also documented by JohnnyGuitar CameraOverlay.
-    auto call=reinterpret_cast<unsigned char*>(0x7144D3);if(*call!=0xE8){log("DLSS pre-interface call unavailable");return;}
+    auto call=reinterpret_cast<unsigned char*>(0x7144D3);if(*call!=0xE8){log("Native UI render bridge unavailable");return;}
     originalRenderInterface=reinterpret_cast<RenderInterface>(call+5+*reinterpret_cast<int32_t*>(call+1));
     DWORD old{};if(VirtualProtect(call,5,PAGE_EXECUTE_READWRITE,&old)){
         *reinterpret_cast<int32_t*>(call+1)=int32_t(reinterpret_cast<unsigned char*>(&renderInterfaceHook)-(call+5));
-        DWORD ignored{};VirtualProtect(call,5,old,&ignored);FlushInstructionCache(GetCurrentProcess(),call,5);log("DLSS pre-interface compositor installed");
+        DWORD ignored{};VirtualProtect(call,5,old,&ignored);FlushInstructionCache(GetCurrentProcess(),call,5);log("Native UI render bridge installed");
     }
 }
 void drawWorldUI(IDirect3DDevice9* device){
@@ -1081,13 +1130,6 @@ void present(){
                 if(x>=1&&y>=1&&x<LONG(width)-2&&y<LONG(height)-2)marks[count++]={std::max(0L,x-stroke),std::max(0L,y-stroke),std::min(LONG(width),x+stroke+1),std::min(LONG(height),y+stroke+1)};}
             if(count)overlay::clearRects(device,count,marks.data(),hudColour());
         }}
-        // D3D9 Clear rects work outside BeginScene and do not alter shader state.
-        auto rect=[&](float l,float t,float r,float b){return D3DRECT{std::clamp(LONG(cursorX+l*scale),0L,LONG(width)),std::clamp(LONG(cursorY+t*scale),0L,LONG(height)),std::clamp(LONG(cursorX+r*scale),0L,LONG(width)),std::clamp(LONG(cursorY+b*scale),0L,LONG(height))};};
-        std::array<D3DRECT,12> cursorRects{};DWORD count=0;
-        auto add=[&](D3DRECT r){if(r.x2>r.x1&&r.y2>r.y1)cursorRects[count++]=r;};
-        if(altAiming){add(rect(-10,-1,-3,2));add(rect(4,-1,11,2));add(rect(-1,-10,2,-3));add(rect(-1,4,2,11));}
-        else for(int i=0;i<12;i++)add(rect(0,float(i),1.f+float(i/2),float(i+1)));
-        if(count)overlay::clearRects(device,count,cursorRects.data(),hudColour());
         displayCamera=overlayCamera;
     }
     drawWorldUI(device);
