@@ -12,3 +12,13 @@
 Build and automated combat, context and route-follower checks passed. In-game validation remains: exit dialogue without Tab; pick Xander Root; collect loose items via Pickup Area; chase and repeatedly attack a moving enemy with a machete. DLSS/Remix remain parked.
 
 Dialogue visibility is checked during conversations and for 750 ms after closing. Scripted startup retains the native camera until the player is out of furniture, dialogue has ended, and movement is enabled. These latest changes still need live verification.
+
+## Opening character creation guard
+
+The fresh-game playtest reproduced premature isometric takeover while Doc Mitchell was speaking before appearance selection. His scripted SayTo lines can run without DialogueMenu, and the old IsControlDisabled query checked xNVSE input state rather than the native DisablePlayerControls flags.
+
+The opening now retains native first-person/cinematic camera ownership through VCG01 stage 54. Stage 55 is the game's own appearance-complete, standing-complete movement handoff. The plugin additionally requires native movement availability, no furniture animation, and no dialogue/menu before switching to third person/isometric. Intro saves reconstruct this guard on load. This reads quest state; it does not advance the quest or change its scripts.
+
+Mod movement, context actions, pickup, attacks, aim indicators and camera toggling cannot bypass the opening guard. Native movement and combat restrictions remain respected after the initial handoff, including subsequent scripted tutorial dialogue. Native dialogue choices and character-creation controls remain available.
+
+Regression checks cover gaps between opening speech lines, appearance-menu stages, intro-save loading, ordinary saves, the stage-55 handoff and independent movement/combat flags. Plugin build and tests pass; the corrected opening still needs a fresh live run.

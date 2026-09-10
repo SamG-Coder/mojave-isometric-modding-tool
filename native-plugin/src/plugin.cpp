@@ -55,6 +55,7 @@ bool enabled{},requested{},hooksReady{},moving{},captureRequested{},lastL{},last
 float rotationSpeed=.35f;bool showAimLine=true,showDamageNumbers=true,automaticADS=true;
 void saveSettings(bool force=false);void installSettingsMenu();void updateLighting(bool enable);
 bool autoEnable=true; bool worldCameraArmed{};bool startupScriptOwnsPlayer=true;
+bool startedNewGame{},openingSequence{};int openingStage{};
 void maintainDialogueBody();
 int rtxMode{},rtxSessionMode{};void rtxTick();void rtxReleaseKey();std::string rtxStatus();
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
@@ -154,9 +155,11 @@ void setEnabled(bool value){
     fadeAlpha=1;fadeHoldUntil=GetTickCount64()+80;enabled=true;cursorX=width/2;cursorY=height/2;note="Isometric prototype enabled";
 }
 bool seated(){return player()&&at<uint32_t>(player(),0x1AC)!=0;}
+// PlayerCharacter::disabledControlFlags (xNVSE runtime ABI), not DisableKey.
+uint8_t nativeControlFlags(){return player()?at<uint8_t>(player(),0x680):0xFF;}
 bool startupCameraReady(){return !startupScriptOwnsPlayer&&combat::startupCameraReady(requested,enabled,hooksReady,worldCameraArmed,player()&&reference(0x14)==player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64));}
-bool cameraActive(){return player()&&combat::keepCamera(enabled||startupCameraReady(),at<void*>(player(),0x40)&&at<void*>(player(),0x64),pendingDisable,pipboyMode());}
-bool active(){return !pipboyMode()&&!seated()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64A)&&!pendingActivation&&!pendingDisable;}
+bool cameraActive(){return !startupScriptOwnsPlayer&&!openingSequence&&player()&&combat::keepCamera(enabled||startupCameraReady(),at<void*>(player(),0x40)&&at<void*>(player(),0x64),pendingDisable,pipboyMode());}
+bool active(){return !startupScriptOwnsPlayer&&!openingSequence&&!combat::nativeMovementLocked(nativeControlFlags())&&!pipboyMode()&&!seated()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64A)&&!pendingActivation&&!pendingDisable;}
 // Filter the mouse device result before vanilla camera code sees lZ.
 // Chain the existing GetDeviceState implementation, including xNVSE's wrapper.
 using GetMouseState=HRESULT(WINAPI*)(void*,DWORD,void*);
@@ -503,7 +506,7 @@ void planDestination(Vec hit,uint32_t id){
     route.begin(pos,target,id?100.f:20.f);routeStarted=GetTickCount64();plannerCpuMs=0;plannerSteps=0;
     note=moving?"Updating route while walking":"Planning route";
 }
-void nearbyDestination(uint32_t id){cancelCombat();auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
+void nearbyDestination(uint32_t id){if(!active())return;cancelCombat();auto ref=reference(id);if(!interactable(ref))return;planDestination(at<Vec>(ref,0x30),id);}
 void beginWalking(){
     lastPlanningMs=GetTickCount64()-routeStarted;auto pos=at<Vec>(player(),0x30);
     if(!follower.adopt(route.path,pos,corridorClear)){
@@ -669,14 +672,16 @@ void refreshAimLine(){
 void releaseAttack(){if(attack.held){holdMappedControl(4,false);attack.held=false;}attack.meleeReleaseAt=0;}
 void setSights(bool value){value=value&&ownedControls[1];if(value==attack.sights)return;holdMappedControl(6,value);attack.sights=value;attack.sightsGate.reset();}
 void attackTarget(void* ref,Vec point){
+    if(!active()||combat::nativeCombatLocked(nativeControlFlags()))return;
     pickupQueue.clear();cancelCombat();stopMovement();
     attack={};attack.hitRef=ref?at<uint32_t>(ref,0xC):0;attack.id=combatActor(ref)?attack.hitRef:0;
     attack.point=attack.id?bodyPoint(ref):point;attack.single=!attack.id;
     attack.cell=at<void*>(player(),0x40);attack.ordered=true;attack.started=GetTickCount64();
     note=attack.id?"Attack target selected":"Single attack at cursor";
 }
-void attackClick(float x,float y){Vec point{};void* object{};if(pick(x,y,point,object,true))attackTarget(parentReference(object),point);}
+void attackClick(float x,float y){if(!active()||combat::nativeCombatLocked(nativeControlFlags()))return;Vec point{};void* object{};if(pick(x,y,point,object,true))attackTarget(parentReference(object),point);}
 void combatTick(){
+    if(!active()||combat::nativeCombatLocked(nativeControlFlags())){cancelCombat();return;}
     auto now=GetTickCount64();
     if(!active()||!player()||at<uint32_t>(player(),0x108)==1||at<uint32_t>(player(),0x108)==2){cancelCombat();return;}
     if(!attack.ordered){
@@ -818,7 +823,7 @@ void input(){
     DWORD foreground{};GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     if(foreground!=GetCurrentProcessId()){closeContext();mouseDeltaX=0;mouseDeltaY=0;stop();lastL=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;lastR=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;return;}
     bool f=(GetAsyncKeyState(VK_F8)&0x8000)!=0;if(f&&!lastF){requested=!enabled;if(requested)setEnabled(true);else{pendingDisable=true;stop();}}lastF=f;
-    altAiming=(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
+    altAiming=active()&&!combat::nativeCombatLocked(nativeControlFlags())&&(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
     bool vats=(GetAsyncKeyState('V')&0x8000)!=0;if(vats&&!lastVats){stop();note="VATS handoff: live attack cancelled";}lastVats=vats;
     bool l=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,r=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
     if(!active()){closeContext();if(!pendingActivation)stop();lastL=l;lastR=r;lastMiddle=false;return;}
@@ -1115,26 +1120,33 @@ void onMessage(Message* m){
     // These ordinals are the public xNVSE 6.4.8 messaging ABI.
     switch(m->type){
     case 9:installHooks();break; // PostPostLoad
-    case 2:case 6:{std::lock_guard<std::mutex> lock(damageMutex);damageNumbers.clear();}restoreCover();mapReady=false;nearby.clear();pendingDisable=false;wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;worldCameraArmed=false;startupScriptOwnsPlayer=true;resetContext();camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
+    case 2:case 6:{std::lock_guard<std::mutex> lock(damageMutex);damageNumbers.clear();}restoreCover();mapReady=false;nearby.clear();pendingDisable=false;wheelInput.reset();saveSettings();setEnabled(false);requested=autoEnable;worldCameraArmed=false;startupScriptOwnsPlayer=true;startedNewGame=false;openingSequence=false;openingStage=0;resetContext();camera=nullptr;savedCamera=nullptr;haveRenderedFrustum=false;break;
     // LoadGame runs after Fallout has read the world, before serialization callbacks.
     // Arm render ownership here; do not run script/control setup from the callback.
     case 3:worldCameraArmed=true;log("Camera armed at LoadGame");break;
     case 8:worldCameraArmed=m->data!=nullptr;log(worldCameraArmed?"Camera armed after successful load":"Camera disarmed after failed load");break;
-    case 14:resetContext();setEnabled(false);startupScriptOwnsPlayer=true;requested=autoEnable;worldCameraArmed=true;log("Camera armed at NewGame");break;
+    case 14:resetContext();setEnabled(false);startedNewGame=true;openingSequence=true;startupScriptOwnsPlayer=true;requested=autoEnable;worldCameraArmed=true;log("Camera deferred until character appearance and scripted wake-up complete");break;
     case 19:expressions.clear();break; // ClearScriptDataCache
     case 1:case 7:renderer_bridge::shutdown();rtxReleaseKey();updateLighting(false);saveSettings();break; // Exit
     case 20:{static uint64_t previousTick{};auto now=GetTickCount64();if(previousTick&&now-previousTick>500)stop();previousTick=now;
         if(pendingActivation&&(areaPickup(reference(interactionId))||fadeAlpha>=.99f)&&now-activationStarted>=100){
             auto ref=reference(interactionId);bool pickup=areaPickup(ref);pendingActivation=false;interactionId=0;if(!pickup)fadeHoldUntil=now+250;pickupReadyAt=now+350;
-            if(gameMode()&&interactable(ref)&&at<void*>(ref,0x40)==at<void*>(player(),0x40)&&length(target-at<Vec>(player(),0x30))<200){
+            if(!startupScriptOwnsPlayer&&!openingSequence&&!combat::nativeMovementLocked(nativeControlFlags())&&gameMode()&&!dialogue()&&interactable(ref)&&at<void*>(ref,0x40)==at<void*>(player(),0x40)&&length(target-at<Vec>(player(),0x30))<200){
                 auto delta=target-at<Vec>(player(),0x30);at<float>(player(),0x2C)=atan2f(delta.x,delta.y);
                 log("Activating reference "+std::to_string(at<uint32_t>(ref,0xC)));note=activate(ref)?"Interaction submitted to game":"Game declined interaction";
             }
         }
         if(pendingDisable&&fadeAlpha>=.99f){pendingDisable=false;setEnabled(false);fadeHoldUntil=now+150;}
         if(startupScriptOwnsPlayer&&worldCameraArmed&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
-            if(combat::mayLeaveScriptedStartup(gameMode(),dialogue(),seated(),number("IsControlDisabled 0")!=0)){
+            openingStage=int(number("GetStage VCG01"));
+            openingSequence=combat::openingOwnsPlayer(startedNewGame,number("GetQuestRunning VCG01")!=0,openingStage);
+            if(openingSequence){
+                // Also repairs saves captured with an older plugin during the intro.
+                startupScriptOwnsPlayer=true;setEnabled(false);closeContext();stop();hoverRef=0;markerUntil=0;
+            }
+            if(startupScriptOwnsPlayer&&combat::mayLeaveScriptedStartup(gameMode(),dialogue(),seated(),combat::nativeMovementLocked(nativeControlFlags()),openingSequence)){
                 startupScriptOwnsPlayer=false;log("Scripted startup finished; player movement available");
+                startedNewGame=false;
             }
         }
         maintainDialogueBody();

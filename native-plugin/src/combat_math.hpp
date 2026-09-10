@@ -41,8 +41,15 @@ inline bool meleeFacing(engine::Vec feet,engine::Vec target,float yaw){
 }
 inline float meleeDistance(engine::Vec feet,engine::Vec targetFeet){auto d=targetFeet-feet;return std::max(std::hypot(d.x,d.y),std::abs(d.z));}
 inline bool useAimDownSights(float distance,bool melee,bool alreadyAiming){return !melee&&distance>(alreadyAiming?400.f:500.f);}
-inline bool mayLeaveScriptedStartup(bool gameplay,bool talking,bool sitting,bool movementDisabled){
- return gameplay&&!talking&&!sitting&&!movementDisabled;
+// VCG01 stage 55 follows the appearance menu and standing animation, and
+// explicitly releases native movement/POV. SayTo lines are not DialogueMenu.
+inline bool openingOwnsPlayer(bool newGame,bool openingQuestRunning,int stage){
+ return (newGame||openingQuestRunning)&&stage<55;
+}
+inline bool nativeMovementLocked(uint8_t flags){return (flags&0x01)!=0;}
+inline bool nativeCombatLocked(uint8_t flags){return (flags&0x08)!=0;}
+inline bool mayLeaveScriptedStartup(bool gameplay,bool talking,bool sitting,bool movementDisabled,bool opening=false){
+ return gameplay&&!talking&&!sitting&&!movementDisabled&&!opening;
 }
 inline bool startupCameraReady(bool requested,bool enabled,bool hooks,bool armed,bool worldReady){
  return requested&&!enabled&&hooks&&armed&&worldReady;

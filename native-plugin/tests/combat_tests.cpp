@@ -11,6 +11,17 @@ int main(){
  check(!combat::mayLeaveScriptedStartup(true,false,false,true),"Scripted movement lock interrupted");
  check(!combat::mayLeaveScriptedStartup(false,true,false,false),"Opening dialogue interrupted");
  check(combat::mayLeaveScriptedStartup(true,false,false,false),"Normal controls never release startup");
+ // Native SayTo dialogue can leave gameMode true and no DialogueMenu open.
+ for(int stage: {0,3,10,15,17,30,36,40,45,50,54}){
+  check(combat::openingOwnsPlayer(true,true,stage),"Opening camera released before appearance/stand-up");
+  check(!combat::mayLeaveScriptedStartup(true,false,false,false,combat::openingOwnsPlayer(true,true,stage)),"Gap between intro lines enabled interactions");
+ }
+ check(combat::openingOwnsPlayer(false,true,15),"Loading an intro save bypassed startup guard");
+ check(!combat::openingOwnsPlayer(false,false,0),"Ordinary save without opening quest was blocked");
+ check(!combat::openingOwnsPlayer(true,true,55),"Appearance-complete walking stage never released");
+ check(!combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x59)),"Native scripted control lock was ignored");
+ check(combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x0C)),"Pip-Boy/combat restriction incorrectly blocked walking");
+ check(combat::nativeCombatLocked(0x0C),"Opening combat restriction was ignored");
  auto north=combat::aim({0,0,0},{0,100,0});check(std::abs(north.yaw)<.001f,"North heading incorrect");
  auto east=combat::aim({0,0,0},{100,0,0});check(std::abs(east.yaw-1.5707963f)<.001f,"East heading incorrect");
  check(combat::aim({0,0,0},{0,100,100}).pitch<0,"Upward aim has wrong pitch sign");
