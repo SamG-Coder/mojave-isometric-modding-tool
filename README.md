@@ -1,6 +1,10 @@
 # Mojave Isometric Modding Tool
 
-By **SamGCoder**. A Windows desktop tool and native C++ plugin for experimenting with an isometric, point-and-click Fallout: New Vegas. This is an early working prototype; it is not a complete game conversion.
+By **SamG-Coder**. A Windows desktop tool and native C++ plugin for experimenting with an isometric, point-and-click Fallout: New Vegas. This is an early working prototype; it is not a complete game conversion.
+
+[**Project page**](https://samg-coder.github.io/mojave-isometric-modding-tool/) · [**Download the alpha**](https://github.com/SamG-Coder/mojave-isometric-modding-tool/releases)
+
+![Mojave Isometric running in Goodsprings in the Steam version of Fallout: New Vegas](docs/images/gameplay.jpg)
 
 The native plugin controls engine camera transforms and renderer projection, performs collision picking, steers the player toward a clicked ground point, and captures the active D3D9 render target. The desktop tool provides camera controls, frame previews and diagnostics.
 
