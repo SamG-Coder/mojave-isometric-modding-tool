@@ -22,11 +22,13 @@
 #include "nvse_abi.hpp"
 #include "engine.hpp"
 #include "wheel_input.hpp"
+#include "input_ownership.hpp"
 #include "pathfinder.hpp"
 #include "overlay.hpp"
 #include "overlay_rects.hpp"
 #include "cutaway.hpp"
 #include "combat_math.hpp"
+#include "seated_visibility.hpp"
 #include "route_follower.hpp"
 #include "native_navigation.hpp"
 using namespace engine;
@@ -57,6 +59,7 @@ void saveSettings(bool force=false);void installSettingsMenu();void updateLighti
 bool autoEnable=true; bool worldCameraArmed{};bool startupScriptOwnsPlayer=true;
 bool startedNewGame{},openingSequence{};int openingStage{};
 void maintainDialogueBody();
+void* actorRoot(void* ref);
 int rtxMode{},rtxSessionMode{};void rtxTick();void rtxReleaseKey();std::string rtxStatus();
 bool controlsAcquired{},lastMiddle{},pendingActivation{};
 uint32_t interactionId{},hoverRef{};uint64_t markerUntil{},activationStarted{},lastFrameTick{};
@@ -108,8 +111,8 @@ void restoreProjection(){if(savedCamera){at<Frustum>(savedCamera,0xDC)=savedFrus
 void ownControls(bool acquire){
     if(acquire==controlsAcquired)return;
     for(int i=0;i<3;i++){
-        if(acquire){ownedControls[i]=number("IsControlDisabled "+std::to_string(controls[i]))==0;if(ownedControls[i])run("DisableControl "+std::to_string(controls[i]));}
-        else if(ownedControls[i]){run("EnableControl "+std::to_string(controls[i]));ownedControls[i]=false;}
+        if(acquire){ownedControls[i]=number("IsControlDisabled "+std::to_string(controls[i]))==0;if(ownedControls[i])run(input_ownership::command(true,controls[i]));}
+        else if(ownedControls[i]){run(input_ownership::command(false,controls[i]));ownedControls[i]=false;}
     }
     if(acquire){
         // Script-only attack and aim input; physical buttons remain owned by UI.
@@ -175,15 +178,10 @@ HRESULT WINAPI mouseStateHook(void* device,DWORD bytes,void* buffer){
     if(SUCCEEDED(result)&&buffer&&(bytes==16||bytes==20)&&inputState&&device==at<void*>(inputState,0x30)){
         bool owns=cursorActive();
         bool ownsLook=combat::suppressNativeLook(cameraActive(),gameMode(),dialogue());
-        wheelInput.filter(at<long>(buffer,8),ownsLook);
-        // DirectInput's physical fire/aim buttons must not leak through when
-        // Search hands off to activation. Scripted Hold/ Tap input is separate.
-        if(ownsLook){for(int control:{4,6}){
-            unsigned button=at<uint8_t>(inputState,0x1BB0+control);
-            if(button<bytes-12)at<uint8_t>(buffer,12+button)=0;
-        }}
-        if(owns){mouseDeltaX.fetch_add(at<long>(buffer,0));mouseDeltaY.fetch_add(at<long>(buffer,4));at<long>(buffer,0)=at<long>(buffer,4)=0;}
-        else {mouseDeltaX=0;mouseDeltaY=0;if(ownsLook)at<long>(buffer,0)=at<long>(buffer,4)=0;}
+        // The chained xNVSE wrapper has ALREADY merged TapControl/HoldKey into
+        // these buttons. Physical fire/aim is suppressed by DisableControl's
+        // user-only mask; clearing buttons here also erases intentional shots.
+        wheelInput.filterMotion(at<long>(buffer,0),at<long>(buffer,4),at<long>(buffer,8),owns,ownsLook,mouseDeltaX,mouseDeltaY);
 
     }
     return result;
@@ -313,8 +311,16 @@ bool patchCall(uintptr_t address,void* hookFunction){
 // view frustum used by Bethesda's culler. Keep reflection/shadow cameras untouched.
 using CullObject=void(__thiscall*)(void*,void*);
 CullObject originalCull{};uint64_t cullingUpdates{};
+thread_local unsigned worldCullDepth{};
+uint64_t seatedBodyPasses{},seatedSurfaceRepairs{};
 void __fastcall cullObjectHook(void* process,void*,void* object){
     if(!cameraActive()||!orthographic||cameraBlend<.999f||at<void*>(process,0xC)!=camera){originalCull(process,object);return;}
+    // Guard the entire outer traversal, before a hidden player root can be
+    // skipped by its parent. This is independent of dialogue or the furniture.
+    const bool repairBody=worldCullDepth==0&&seated()&&!startupScriptOwnsPlayer;
+    seated_visibility::WorldBodyScope body(repairBody?actorRoot(player()):nullptr);
+    if(repairBody){++seatedBodyPasses;seatedSurfaceRepairs+=body.repaired;}
+    ++worldCullDepth;
     const auto oldFrustum=at<Frustum>(process,0x10);
     const auto oldPlanes=at<CullingPlanes>(process,0x2C);
     void* compound=at<void*>(process,0xC0);
@@ -331,6 +337,7 @@ void __fastcall cullObjectHook(void* process,void*,void* object){
     // frustum culling, alter object visibility flags or touch other cameras.
     at<void*>(process,0xC0)=nullptr;
     ++cullingUpdates;originalCull(process,object);
+    --worldCullDepth;
     at<void*>(process,0xC0)=compound;
     at<Frustum>(process,0x10)=oldFrustum;at<CullingPlanes>(process,0x2C)=oldPlanes;
 }
@@ -816,6 +823,7 @@ void status(){
     s<<",\"rtx_mode\":"<<rtxMode<<",\"rtx_session_mode\":"<<rtxSessionMode<<",\"rtx_status\":"<<remix_catalog::quote(rtxStatus());
     s<<",\"dlss_status\":"<<remix_catalog::quote(renderer_bridge::status())<<",\"dlss_submitted_frames\":"<<(renderer_bridge::pipeline?renderer_bridge::pipeline->frame:0);
     s<<",\"context_menu_open\":"<<(contextOpen?"true":"false");
+    s<<",\"seated_body_passes\":"<<seatedBodyPasses<<",\"seated_surface_repairs\":"<<seatedSurfaceRepairs;
     s<<",\"opening_stage\":"<<openingStage<<",\"opening_sequence\":"<<(openingSequence?"true":"false")
      <<",\"startup_waiting\":"<<(startupScriptOwnsPlayer?"true":"false")<<",\"native_control_flags\":"<<unsigned(nativeControlFlags());
     s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;

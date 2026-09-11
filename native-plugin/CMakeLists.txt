@@ -22,6 +22,9 @@ target_compile_features(MojaveIsoWheelTests PRIVATE cxx_std_20)
 add_executable(MojaveIsoCameraTests tests/camera_tests.cpp)
 target_compile_features(MojaveIsoCameraTests PRIVATE cxx_std_20)
 
+add_executable(MojaveIsoSeatedVisibilityTests tests/seated_visibility_tests.cpp)
+target_compile_features(MojaveIsoSeatedVisibilityTests PRIVATE cxx_std_20)
+
 add_executable(MojaveIsoPathTests tests/pathfinder_tests.cpp)
 target_compile_features(MojaveIsoPathTests PRIVATE cxx_std_20)
 
