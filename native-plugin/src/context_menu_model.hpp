@@ -10,6 +10,12 @@ enum class Action {Activate,Attack,Vats,Move,PickupArea,TakeItem,TakeAll,Previou
 struct Row {Action action;std::string label;uint32_t target{};};
 inline bool pickup(unsigned k){return k==0x18||k==0x19||k==0x1D||k==0x1F||k==0x28||k==0x29||k==0x2E||k==0x2F||k==0x31;}
 inline bool activatable(unsigned k){return pickup(k)||k==0x15||k==0x16||k==0x17||k==0x1B||k==0x1C||k==0x26||k==0x27||k==0x2A||k==0x2B;}
+inline bool availableReference(unsigned type,uint32_t flags){
+ // Bit 1 is part of the taken-item mask, not an actor deletion test.
+ // Corpses are still activatable actors. Deleted/disabled references are not.
+ if(type<0x3A||type>0x3C||flags&0x820u)return false;
+ return type!=0x3A||(flags&2u)==0;
+}
 inline const char* verb(unsigned k,bool dead){
  if(k==0x2A||k==0x2B)return dead?"Search":(k==0x2A?"Talk":"Interact");
  if(k==0x1C)return "Open / close";
@@ -19,9 +25,9 @@ inline const char* verb(unsigned k,bool dead){
  if(pickup(k))return "Take";
  return "Use";
 }
-inline std::vector<Row> actions(unsigned kind,bool dead,bool attackable,bool object){
+inline std::vector<Row> actions(unsigned kind,bool dead,bool attackable,bool object,bool usable=true){
  std::vector<Row> r;
- if(object&&activatable(kind))r.push_back({Action::Activate,verb(kind,dead)});
+ if(object&&usable&&activatable(kind))r.push_back({Action::Activate,verb(kind,dead)});
  if(object&&attackable){r.push_back({Action::Attack,"Attack"});r.push_back({Action::Vats,"Open VATS"});}
  r.push_back({Action::PickupArea,"Pickup Area"});
  r.push_back({Action::Move,object?"Walk here":"Move here"});

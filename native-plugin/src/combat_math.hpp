@@ -55,12 +55,20 @@ inline bool startupCameraReady(bool requested,bool enabled,bool hooks,bool armed
  return requested&&!enabled&&hooks&&armed&&worldReady;
 }
 inline bool keepCamera(bool enabled,bool loadedWorld,bool disabling,uint32_t pipboy=0){return enabled&&loadedWorld&&!disabling&&pipboy==0;}
+inline bool renderedFirstPerson(bool playerActor,bool cameraOwned,bool nativeRequest){
+ return playerActor&&cameraOwned?false:nativeRequest;
+}
 inline bool restoreThirdPersonBody(bool cameraOwned,bool gameplay,bool talking,bool sitting,bool alreadyThird){
- return cameraOwned&&!alreadyThird&&(talking||(gameplay&&!sitting));
+ return cameraOwned&&!alreadyThird&&(talking||gameplay||sitting);
+}
+// Furniture and scripted SayTo dialogue still use gameplay mouse-look. They
+// disable interaction, but must not return camera input to the native POV.
+inline bool suppressNativeLook(bool cameraOwned,bool gameplay,bool dialogueMenu){
+ return cameraOwned&&gameplay&&!dialogueMenu;
 }
 // Obstruction is advisory for projectiles; native collision decides what is hit.
 // Melee still requires an unobstructed reach to avoid swinging through walls.
-inline bool canEngage(float distance,float range,bool clear,bool gameplay,bool alive,bool melee){return gameplay&&alive&&(!melee||clear)&&distance<=range;}
+inline bool canEngage(float distance,float range,bool clear,bool gameplay,bool alive,bool melee){return gameplay&&alive&&(!melee||(clear&&distance<=range));}
 inline bool refreshPursuit(uint64_t now,uint64_t previous,float targetShift,float range,bool moving,bool searching){
  if(!previous)return true;
  if(now-previous<250)return false;

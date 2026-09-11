@@ -1,5 +1,25 @@
 # Playtest fixes: pickup, dialogue and melee
 
+## Seated mouse movement and attack input
+
+The native cursor, cursor deltas and picking projection now remain available
+when the player is seated but gameplay movement is allowed. Clicking ground
+submits the native forward-control tap to leave furniture, retains the chosen
+destination through the standing transition and starts pathfinding afterward.
+Scripted movement locks and dialogue still prevent new walking orders. Right
+click, menu/focus changes or an eight-second timeout cancel the pending walk.
+
+Physical fire/aim mouse buttons are filtered at DirectInput while the camera
+owns gameplay input, including pending Search activation. Attack controls are
+not released merely because activation is pending. Native menu mouse input and
+scripted attack input remain separate.
+
+Weapon range no longer vetoes ranged shots or initiates ranged pursuit. Native
+projectile collision, ammunition, reload and firing animation still apply.
+Melee reach and obstruction checks remain. Local combat, context and wheel
+tests passed; the seated cursor and weapon/Search sequence need an in-game
+check by the user or a separately authorized playtest.
+
 - Native third-person detection now uses PlayerCharacter::is3rdPerson at 0x64A (JIP-LN-NVSE GameObjects.h), rather than the unrelated byte at 0x64C.
 - Walking uses the held native forward binding. It no longer overwrites native movement flags every frame; stopping clears directional flags through the documented mover method.
 - Melee pursuit waits for native attack/recovery actions before chasing again, and allows the submitted attack press its full input window.
@@ -30,3 +50,36 @@ Replaced the D3D rectangle arrow and aiming crosshair with the game's existing c
 Cursor position, colour and visibility changes are scoped to the additional render pass and restored immediately afterward. Menus, dialogue, character creation and disabled isometric mode keep native cursor ownership. No replacement cursor texture is distributed.
 
 Validation: Release plugin build, camera, combat and context tests pass. Live Steam gameplay captures verify the native arrow, red colouring during a queued ground shot, and restoration to amber after the shot. Full opening/dialogue playthrough remains pending.
+
+## Character-creation handoff recovery
+
+The startup guard no longer obtains VCG01 state from compiled editor-ID expressions. The generic numeric-expression helper maps a failed query to zero, which can keep a fresh game blocked indefinitely. It now resolves base-game quest form 00104C1C through the native form table and reads TESQuest currentStage/flags directly. The stage-55 handoff still requires released movement, finished furniture animation and no active dialogue/menu.
+
+Runtime status now reports opening_stage, opening_sequence, startup_waiting and native_control_flags. Regression checks cover both fresh games and loaded intro saves at the handoff, including the remaining native fight/Pip-Boy locks. Release build and combat checks pass; a live character-creation rerun is still required.
+
+## Seated visibility, zoom and creature Search correction
+
+Native mouse-look ownership now follows the camera through seated/SayTo gameplay,
+while dialogue/menu input is retained. Scroll zoom is restored. The experimental
+camera-transform and material-opacity overrides were removed, as was blanket
+hiding of the first-person skeleton.
+
+The couch reproduction is independent of dialogue. Read-only inspection of the
+running game confirmed both the requested third-person flag and visible nodes,
+and traced native rendered-body selection to 0x951A10. Eight validated callers
+include direct calls that bypass ToggleFirstPerson (0x950110). These callers now
+pass through a separate body-selection guard while the mod owns the camera.
+Native body/animation bookkeeping is retained; manual node-unhiding is removed.
+The main loop reconciles a mismatched rendered-body state through that same
+native routine. Intro and Pip-Boy camera ownership remain exceptions.
+
+Search and hover incorrectly applied the taken-item bit to actor references.
+The shared eligibility function now reserves that bit for non-actor references,
+and still rejects deleted or disabled actors. The context menu uses the same
+eligibility as hover and activation instead of offering an unusable Search row.
+
+Validation is limited to local builds and automated tests: creature Search,
+reference flags, native body-switch ownership, intro/Pip-Boy passthrough, combat/startup
+guards and wheel/menu input. The reported gecko and
+couch scenes have not been replayed with this build. Desktop/game automation
+requires the user's permission before any further live test.

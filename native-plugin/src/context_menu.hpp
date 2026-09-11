@@ -65,7 +65,7 @@ void openContext(){
  context.target=ref?at<uint32_t>(ref,0xC):0;context.point=hit;
  context.cell=at<uint32_t>(at<void*>(player(),0x40),0xC);context.anchor={cursorX/width,cursorY/height};
  unsigned kind=ref&&at<void*>(ref,0x20)?at<uint8_t>(at<void*>(ref,0x20),4):0;
- context.rows=context_menu::actions(kind,(kind==0x2A||kind==0x2B)&&!combatActor(ref),combatActor(ref),ref!=nullptr);
+ context.rows=context_menu::actions(kind,(kind==0x2A||kind==0x2B)&&!combatActor(ref),combatActor(ref),ref!=nullptr,interactable(ref));
  context.title=ref?objectName(ref):"Ground";contextOpen=true;updateContext();
 }
 void updateContext(){
@@ -77,7 +77,7 @@ void updateContext(){
  if(context.pickupList){auto now=GetTickCount64();if(now-context.refreshed>=500){context.refreshed=now;pickupRows();}}
  else if(auto ref=reference(context.target)){
   auto base=at<void*>(ref,0x20);unsigned kind=base?at<uint8_t>(base,4):0;
-  context.rows=context_menu::actions(kind,(kind==0x2A||kind==0x2B)&&!combatActor(ref),combatActor(ref),true);
+  context.rows=context_menu::actions(kind,(kind==0x2A||kind==0x2B)&&!combatActor(ref),combatActor(ref),true,interactable(ref));
  }
  if(!context.tile)context.tile=reinterpret_cast<void*(__thiscall*)(void*,const char*)>(0xA01B00)(rootTile,R"(menus\MojaveIso\context.xml)");
  if(!context.tile){closeContext();note="Context menu XML unavailable";return;}
@@ -121,7 +121,7 @@ bool contextInput(bool click){
  auto id=row.target?row.target:context.target;auto point=context.point;auto ref=reference(id);closeContext();
  switch(action){
  case context_menu::Action::TakeItem:if(pickupVisible(ref)){pickupQueue={id};pickupTick();}break;
- case context_menu::Action::Activate:if(interactable(ref))nearbyDestination(id);break;
+ case context_menu::Action::Activate:if(interactable(ref))nearbyDestination(id);else note="Interaction target is no longer available";break;
  case context_menu::Action::Attack:if(combatActor(ref))attackTarget(ref,bodyPoint(ref));break;
  case context_menu::Action::Vats:if(combatActor(ref)){stop();facePoint(bodyPoint(ref));run("TapControl 16");note="Opening native VATS";}break;
  case context_menu::Action::Move:{stop();Vec floor{};if(length(point-at<Vec>(player(),0x30))<=6000&&groundProbe(point,floor))planDestination(floor,0);else note="No walkable ground at this point";break;}

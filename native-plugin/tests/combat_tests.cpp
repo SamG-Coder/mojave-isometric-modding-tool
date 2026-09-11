@@ -5,6 +5,13 @@
 #include <cstdlib>
 void check(bool value,const char* message){if(!value){std::cerr<<message<<"\n";std::exit(1);}}
 int main(){
+ // Body-switch calls made directly by furniture must obey camera ownership,
+ // regardless of whether DialogueMenu is open or the POV flag already says 3P.
+ for(bool nativeRequest:{false,true}){
+  check(!combat::renderedFirstPerson(true,true,nativeRequest),"Owned furniture body switched to first person");
+  check(combat::renderedFirstPerson(true,false,nativeRequest)==nativeRequest,"Pip-Boy/intro body switch blocked");
+  check(combat::renderedFirstPerson(false,true,nativeRequest)==nativeRequest,"Non-player body switch modified");
+ }
  for(int action:{2,3,4,5,6})check(combat::nativeSwing(action),"Native attack recovery interrupted");
  for(int action:{-1,0,1,7,8,9,10})check(!combat::nativeSwing(action),"Non-attack action stalls pursuit");
  check(!combat::mayLeaveScriptedStartup(true,false,true,false),"Bed animation interrupted");
@@ -19,6 +26,12 @@ int main(){
  check(combat::openingOwnsPlayer(false,true,15),"Loading an intro save bypassed startup guard");
  check(!combat::openingOwnsPlayer(false,false,0),"Ordinary save without opening quest was blocked");
  check(!combat::openingOwnsPlayer(true,true,55),"Appearance-complete walking stage never released");
+ for(bool newGame:{false,true}){
+  bool opening=combat::openingOwnsPlayer(newGame,true,55);
+  check(combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x0C),opening),"Native handoff stayed blocked by unrelated fight/Pip-Boy restrictions");
+  check(!combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x0D),opening),"Stage handoff bypassed scripted movement lock");
+  check(!combat::mayLeaveScriptedStartup(false,true,false,false,opening),"Stage handoff interrupted dialogue");
+ }
  check(!combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x59)),"Native scripted control lock was ignored");
  check(combat::mayLeaveScriptedStartup(true,false,false,combat::nativeMovementLocked(0x0C)),"Pip-Boy/combat restriction incorrectly blocked walking");
  check(combat::nativeCombatLocked(0x0C),"Opening combat restriction was ignored");
@@ -27,7 +40,7 @@ int main(){
  check(combat::aim({0,0,0},{0,100,100}).pitch<0,"Upward aim has wrong pitch sign");
  check(combat::aim({0,0,0},{0,100,-100}).pitch>0,"Downward aim has wrong pitch sign");
  check(combat::canAttack(100,200,true,false,true,true,false),"Clear in-range attack rejected");
- check(!combat::canAttack(300,200,true,false,true,true,false),"Out-of-range attack accepted");
+ check(combat::canAttack(300,200,true,false,true,true,false),"Distant ranged shot rejected");
  check(combat::canAttack(100,200,false,false,true,true,false),"Obstructed ranged shot rejected");
  check(!combat::canAttack(100,200,true,true,true,true,false),"Moving attack accepted");
  check(!combat::canAttack(100,200,true,false,false,true,false),"Menu attack accepted");
@@ -36,7 +49,9 @@ int main(){
  check(!combat::canAttack(100,200,false,false,true,true,true),"Obstructed melee accepted");
  check(!combat::canEngage(100,200,false,true,true,true),"Obstructed melee stopped pursuit");
  check(combat::canAttack(100,200,true,false,true,true,true),"Clear melee rejected");
- check(!combat::canAttack(300,200,false,false,true,true,false),"Blocked out-of-range shot accepted");
+ check(!combat::canAttack(300,200,true,false,true,true,true),"Out-of-reach melee accepted");
+ check(combat::canEngage(12000,200,false,true,true,false),"Ranged target unnecessarily starts pursuit");
+ check(combat::canAttack(300,200,false,false,true,true,false),"Distant obstructed ranged attempt rejected");
  check(!combat::canAttack(100,200,false,true,true,true,false),"Blocked shot bypassed movement gate");
  check(!combat::canAttack(100,200,false,false,false,true,false),"Blocked shot bypassed menu gate");
  check(!combat::canAttack(100,200,false,false,true,false,false),"Blocked shot bypassed dead-target gate");
@@ -77,7 +92,12 @@ int main(){
  check(combat::restoreThirdPersonBody(true,false,true,true,false),"Seated dialogue failed to retain player body");
  check(!combat::restoreThirdPersonBody(false,false,true,false,false),"Pip-Boy or disabled camera forced third person");
  check(!combat::restoreThirdPersonBody(true,false,false,false,false),"Unrelated menu forced third person");
- check(!combat::restoreThirdPersonBody(true,true,false,true,false),"Furniture gameplay changed native POV");
+ check(combat::restoreThirdPersonBody(true,true,false,true,false),"Seated SayTo scene left isometric body in first person");
+ check(combat::restoreThirdPersonBody(true,true,false,false,false),"Standing after dialogue left first-person arms active");
+ check(combat::suppressNativeLook(true,true,false),"Seated gameplay leaked mouse-look into native POV");
+ check(!combat::suppressNativeLook(true,false,true),"Dialogue choices lost their native mouse");
+ check(!combat::suppressNativeLook(true,false,false),"Native menu lost its mouse");
+ check(!combat::suppressNativeLook(false,true,false),"Intro or disabled mod blocked native looking");
  check(!combat::restoreThirdPersonBody(true,false,true,false,true),"Visible dialogue body triggered repeated POV changes");
  check(combat::meleeHeading({0,0,0},{1,-1,40},1.2f,.016f)==1.2f,"Overlapping melee target spun the player");
  check(std::abs(combat::meleeHeading({0,0,0},{100,0,0},0,.016f))<.101f,"Melee rotation exceeded its rate limit");

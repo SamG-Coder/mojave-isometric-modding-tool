@@ -56,8 +56,8 @@ inline void* reference(uint32_t id){
     return nullptr;
 }
 inline bool interactable(void* ref){
-    if(!ref||ref==player()||(at<uint32_t>(ref,8)&0x822))return false;
-    auto type=at<uint8_t>(ref,4);if(type<0x3A||type>0x3C)return false;
+    if(!ref||ref==player())return false;
+    if(!context_menu::availableReference(at<uint8_t>(ref,4),at<uint32_t>(ref,8)))return false;
     auto base=at<void*>(ref,0x20);if(!base)return false;
     auto kind=at<uint8_t>(base,4);
     return context_menu::activatable(kind);

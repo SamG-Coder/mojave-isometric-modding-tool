@@ -64,6 +64,7 @@ float cameraBlend=0, frameDt=0.016f, desiredYaw=45,desiredPitch=50;
 bool nativePipboyOwned{},priorWristPipboy{};
 bool priorThird{}; std::array<bool,3> ownedControls{};
 int heldForward=-1;
+bool standWalkPending{};Vec standWalkPoint{};uint64_t standWalkStarted{};
 constexpr int controls[]{4,6,13};
 float yaw=45,pitch=50,distance=1100,span=1500,cursorX=640,cursorY=360;
 bool orthographic=true; float width=1280,height=720;
@@ -102,7 +103,7 @@ void cancelCombat(){
     aimLine.valid=false;lastAimUpdate=0;attack.shot={};attack.sightsGate.reset();attack.meleeReleaseAt=0;attack.ordered=false;altAiming=false;
     if(aimOwned&&player()){at<float>(player(),0x24)=priorAimPitch;aimOwned=false;}
 }
-void stop(){pickupQueue.clear();cancelCombat();stopMovement();}
+void stop(){standWalkPending=false;pickupQueue.clear();cancelCombat();stopMovement();}
 void restoreProjection(){if(savedCamera){at<Frustum>(savedCamera,0xDC)=savedFrustum;savedCamera=nullptr;}}
 void ownControls(bool acquire){
     if(acquire==controlsAcquired)return;
@@ -159,7 +160,9 @@ bool seated(){return player()&&at<uint32_t>(player(),0x1AC)!=0;}
 uint8_t nativeControlFlags(){return player()?at<uint8_t>(player(),0x680):0xFF;}
 bool startupCameraReady(){return !startupScriptOwnsPlayer&&combat::startupCameraReady(requested,enabled,hooksReady,worldCameraArmed,player()&&reference(0x14)==player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64));}
 bool cameraActive(){return !startupScriptOwnsPlayer&&!openingSequence&&player()&&combat::keepCamera(enabled||startupCameraReady(),at<void*>(player(),0x40)&&at<void*>(player(),0x64),pendingDisable,pipboyMode());}
-bool active(){return !startupScriptOwnsPlayer&&!openingSequence&&!combat::nativeMovementLocked(nativeControlFlags())&&!pipboyMode()&&!seated()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64A)&&!pendingActivation&&!pendingDisable;}
+bool cursorActive(){return !startupScriptOwnsPlayer&&!openingSequence&&!combat::nativeMovementLocked(nativeControlFlags())&&!pipboyMode()&&enabled&&gameMode()&&!dialogue()&&player()&&at<uint8_t>(player(),0x64A)&&!pendingActivation&&!pendingDisable;}
+bool active(){return cursorActive()&&!seated();}
+
 // Filter the mouse device result before vanilla camera code sees lZ.
 // Chain the existing GetDeviceState implementation, including xNVSE's wrapper.
 using GetMouseState=HRESULT(WINAPI*)(void*,DWORD,void*);
@@ -170,9 +173,17 @@ HRESULT WINAPI mouseStateHook(void* device,DWORD bytes,void* buffer){
     HRESULT result=found->second(device,bytes,buffer);
     void* inputState=global(0x11F35CC);
     if(SUCCEEDED(result)&&buffer&&(bytes==16||bytes==20)&&inputState&&device==at<void*>(inputState,0x30)){
-        bool owns=active();wheelInput.filter(at<long>(buffer,8),owns);
+        bool owns=cursorActive();
+        bool ownsLook=combat::suppressNativeLook(cameraActive(),gameMode(),dialogue());
+        wheelInput.filter(at<long>(buffer,8),ownsLook);
+        // DirectInput's physical fire/aim buttons must not leak through when
+        // Search hands off to activation. Scripted Hold/ Tap input is separate.
+        if(ownsLook){for(int control:{4,6}){
+            unsigned button=at<uint8_t>(inputState,0x1BB0+control);
+            if(button<bytes-12)at<uint8_t>(buffer,12+button)=0;
+        }}
         if(owns){mouseDeltaX.fetch_add(at<long>(buffer,0));mouseDeltaY.fetch_add(at<long>(buffer,4));at<long>(buffer,0)=at<long>(buffer,4)=0;}
-        else {mouseDeltaX=0;mouseDeltaY=0;}
+        else {mouseDeltaX=0;mouseDeltaY=0;if(ownsLook)at<long>(buffer,0)=at<long>(buffer,4)=0;}
 
     }
     return result;
@@ -239,7 +250,7 @@ using SetVector=void(__thiscall*)(void*,const Vec*);
 using SetMatrix=void(__thiscall*)(void*,const Mat*);
 SetVector originalPos{}; SetMatrix originalRot{};
 void __fastcall positionHook(void* node,void*,const Vec* pos){
-    if(cameraActive()){maintainDialogueBody();cameraBlend=1;basis();updateLighting(true);originalPos(node,&cameraPos);++cameraUpdates;}else {updateLighting(false);originalPos(node,pos);}
+    if(cameraActive()){cameraBlend=1;basis();updateLighting(true);originalPos(node,&cameraPos);++cameraUpdates;}else {updateLighting(false);originalPos(node,pos);}
 }
 void __fastcall rotationHook(void* node,void*,const Mat* rot){
     if(!cameraActive()){restoreProjection();originalRot(node,rot);return;}
@@ -255,6 +266,12 @@ void __fastcall rotationHook(void* node,void*,const Mat* rot){
 bool __fastcall dialoguePOVHook(void* actor,void*,bool firstPerson){
     if(actor==player()&&cameraActive()&&!startupScriptOwnsPlayer)firstPerson=false;
     return reinterpret_cast<bool(__thiscall*)(void*,bool)>(0x950110)(actor,firstPerson);
+}
+// The rendered body switch is separate from ToggleFirstPerson. Furniture and
+// other engine paths call it directly without changing the requested POV first.
+void __fastcall renderedBodyHook(void* actor,void*,bool firstPerson){
+    firstPerson=combat::renderedFirstPerson(actor==player(),cameraActive(),firstPerson);
+    reinterpret_cast<void(__thiscall*)(void*,bool)>(0x951A10)(actor,firstPerson);
 }
 uintptr_t callTarget(uintptr_t a){if(*reinterpret_cast<uint8_t*>(a)!=0xe8)return 0;return a+5+*reinterpret_cast<int32_t*>(a+1);}
 // Supported runtime 1.4.0.525: weapon-fire call 5245BD -> 9BCA60,
@@ -389,6 +406,12 @@ void installHooks(){
     for(uintptr_t site:{0x58D04Fu,0x60A63Au,0x60A872u,0x7E950Fu,0x8FEB21u,0x8FEB52u,0x8FEBD1u,0x8FEC02u,0x925AEEu,0x925B25u,0x93E8DFu,0x93E8EEu,0x942CC0u,0x942DC9u,0x945B9Du,0x945C5Du,0x9503BAu,0x95044Du,0x95051Au,0x9505F6u,0x953AC7u,0x958EFBu,0x9C75FFu,0x9C7E40u,0x9C99FBu})
         if(callTarget(site)==0x950110&&patchCall(site,reinterpret_cast<void*>(dialoguePOVHook)))++povSites;
     log("Dialogue player-body POV guards installed: "+std::to_string(povSites)+"/25");
+    constexpr uintptr_t bodySites[]{0x761DEF,0x93FC36,0x942B73,0x9501EC,0x950279,0x950329,0x953124,0x95C7C3};
+    bool bodySitesValid=true;for(auto site:bodySites)bodySitesValid&=callTarget(site)==0x951A10;
+    if(bodySitesValid){
+        unsigned installed=0;for(auto site:bodySites)if(patchCall(site,reinterpret_cast<void*>(renderedBodyHook)))++installed;
+        log("Native rendered-body guards installed: "+std::to_string(installed)+"/8");
+    }else log("Native rendered-body callers differ; body guards refused");
     void* previousCull{};
     if(replaceSlot(0x101E2EC+0x44,reinterpret_cast<void*>(cullObjectHook),previousCull)){
         originalCull=reinterpret_cast<CullObject>(previousCull);log("World-transform orthographic bound culling installed (compound occlusion excluded)");
@@ -428,7 +451,7 @@ void assistPickup(float x,float y,Vec& hit,void*& object){
     hit=selected;
 }
 bool pick(float x,float y,Vec& hit,void*& hitObject,bool aimSelection=false){
-    if(!active()||!camera||cameraBlend<0.999f)return false;
+    if(!cursorActive()||!camera||cameraBlend<0.999f)return false;
     Vec origin{},ray{};
     if(!displayCamera.ray(x,y,origin,ray))return false;
     auto cell=at<void*>(player(),0x40);
@@ -553,7 +576,7 @@ void walk(){
     float reach=interactionId?110.f:24.f;
     if(std::sqrt(delta.x*delta.x+delta.y*delta.y)<reach&&std::abs(delta.z)<(interactionId?150.f:45.f)){
         uint32_t id=interactionId;stopMovement();markerUntil=GetTickCount64()+900;
-        if(id){interactionId=id;pendingActivation=true;activationStarted=GetTickCount64();ownControls(false);note="Approaching interaction camera";}
+        if(id){interactionId=id;pendingActivation=true;activationStarted=GetTickCount64();note="Approaching interaction camera";}
         else note="Destination reached";
         return;
     }
@@ -605,16 +628,14 @@ void* namedBone(void* node,const char* wanted,unsigned depth=0){
 }
 void* actorRoot(void* ref){auto render=ref?at<void*>(ref,0x64):nullptr;return render?at<void*>(render,0x14):nullptr;}
 void maintainDialogueBody(){
-    static uint64_t lastTalking{};
-    if(!cameraActive()||startupScriptOwnsPlayer){lastTalking=0;return;}
-    auto now=GetTickCount64();if(dialogue())lastTalking=now;
-    if(!lastTalking||now-lastTalking>750)return;
-    // Native conversation setup can app-cull the world body independently of
-    // the POV flag. Only repair the player root, never equipment or effect alpha.
-    auto node=actorRoot(player());if(node&&(at<uint32_t>(node,0x30)&1)){
-        at<uint32_t>(node,0x30)&=~1u;
-        log("Restored dialogue player-root visibility");
-    }
+    if(!cameraActive()||startupScriptOwnsPlayer)return;
+    auto actor=player();auto third=actorRoot(actor);
+    auto first=at<void*>(actor,0x694);
+    if(!third||!first)return;
+    // Use the native body switch to keep its mesh/animation bookkeeping in
+    // agreement. Clearing root/part flags alone bypasses that bookkeeping.
+    if(!at<uint8_t>(actor,0x64B)||(at<uint32_t>(third,0x30)&1u)||!(at<uint32_t>(first,0x30)&1u))
+        reinterpret_cast<void(__thiscall*)(void*,bool)>(0x951A10)(actor,false);
 }
 bool validActorPoint(Vec point,Vec feet){return std::isfinite(point.x)&&std::isfinite(point.y)&&std::isfinite(point.z)&&length(point-feet)<400;}
 Vec bodyPoint(void* ref){
@@ -795,6 +816,8 @@ void status(){
     s<<",\"rtx_mode\":"<<rtxMode<<",\"rtx_session_mode\":"<<rtxSessionMode<<",\"rtx_status\":"<<remix_catalog::quote(rtxStatus());
     s<<",\"dlss_status\":"<<remix_catalog::quote(renderer_bridge::status())<<",\"dlss_submitted_frames\":"<<(renderer_bridge::pipeline?renderer_bridge::pipeline->frame:0);
     s<<",\"context_menu_open\":"<<(contextOpen?"true":"false");
+    s<<",\"opening_stage\":"<<openingStage<<",\"opening_sequence\":"<<(openingSequence?"true":"false")
+     <<",\"startup_waiting\":"<<(startupScriptOwnsPlayer?"true":"false")<<",\"native_control_flags\":"<<unsigned(nativeControlFlags());
     s<<",\"damage_callbacks\":"<<damageHookCalls<<",\"player_damage_callbacks\":"<<damagePlayerHits<<",\"damage_popups_queued\":"<<damageNumberCount;
     s<<",\"renderer_hook_ready\":"<<(rendererHookReady?"true":"false")<<",\"projection_updates\":"<<projectionUpdates<<",\"culling_updates\":"<<cullingUpdates<<",\"geometry_visits\":"<<geometryVisits<<",\"cutaway_draws\":"<<cutawayDraws<<",\"rendered_orthographic\":"<<(haveRenderedFrustum&&renderedFrustum.ortho?"true":"false")<<",\"note\":\""<<note<<"\",\"error\":\""<<lastError<<"\"}";
     {std::ofstream f(bridge+"/status.tmp");f<<s.str();}MoveFileExA((bridge+"/status.tmp").c_str(),(bridge+"/status.json").c_str(),MOVEFILE_REPLACE_EXISTING);
@@ -826,7 +849,8 @@ void input(){
     altAiming=active()&&!combat::nativeCombatLocked(nativeControlFlags())&&(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
     bool vats=(GetAsyncKeyState('V')&0x8000)!=0;if(vats&&!lastVats){stop();note="VATS handoff: live attack cancelled";}lastVats=vats;
     bool l=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,r=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
-    if(!active()){closeContext();if(!pendingActivation)stop();lastL=l;lastR=r;lastMiddle=false;return;}
+    if(standWalkPending&&(!cameraActive()||!gameMode()||dialogue()||GetTickCount64()-standWalkStarted>8000))standWalkPending=false;
+    if(!cursorActive()){closeContext();if(!pendingActivation&&!standWalkPending)stop();lastL=l;lastR=r;lastMiddle=false;return;}
     void* in=global(0x11F35CC);if(in){
         bool middle=(GetAsyncKeyState(VK_MBUTTON)&0x8000)!=0;
         int dx=mouseDeltaX.exchange(0),dy=mouseDeltaY.exchange(0);
@@ -834,6 +858,20 @@ void input(){
         else {cursorX=std::clamp(cursorX+float(dx)*(height/720.f),0.f,width-1);cursorY=std::clamp(cursorY+float(dy)*(height/720.f),0.f,height-1);}
         lastMiddle=middle;
         int wheel=wheelInput.take();if(wheel&&!contextOpen){distance=std::clamp(distance-wheel*.5f,200.f,4000.f);span=std::clamp(span-wheel*.5f,300.f,5000.f);}}
+    if(seated()){
+        closeContext();cancelCombat();
+        if(r&&!lastR){standWalkPending=false;note="Standing destination cancelled";}
+        if(l&&!lastL&&!lastMiddle){
+            Vec hit{},floor{};void* object{};
+            if(pick(cursorX,cursorY,hit,object)&&length(hit-at<Vec>(player(),0x30))<=6000&&groundProbe(hit,floor)){
+                standWalkPoint=floor;standWalkPending=true;standWalkStarted=GetTickCount64();
+                run("TapControl 0");note="Standing up to walk to clicked point";
+            }
+        }
+        if(standWalkPending&&GetTickCount64()-standWalkStarted>8000){standWalkPending=false;note="Standing animation did not finish; click again to retry";}
+        lastL=l;lastR=r;return;
+    }
+    if(standWalkPending){auto point=standWalkPoint;standWalkPending=false;planDestination(point,0);}
     if(GetAsyncKeyState(VK_OEM_4)&0x8000)desiredYaw-=100.f*frameDt;
     if(GetAsyncKeyState(VK_OEM_6)&0x8000)desiredYaw+=100.f*frameDt;
     if(r&&!lastR&&!lastMiddle){if(contextOpen)closeContext();else openContext();lastL=l;lastR=r;return;}
@@ -1059,7 +1097,7 @@ void __fastcall renderInterfaceHook(void* ui,void*,void* culler,bool pipboyVisib
         }
     }else renderer_bridge::suspend();
     originalRenderInterface(ui,culler,pipboyVisible);
-    NativeCursorFrame cursor(ui,active()&&!pipboyVisible&&at<void*>(ui,4)&&at<void*>(ui,0x8C));
+    NativeCursorFrame cursor(ui,cursorActive()&&!pipboyVisible&&at<void*>(ui,4)&&at<void*>(ui,0x8C));
     if(cursor.tile){
         // The gameplay UI pass omits the cursor. Submit the existing engine node
         // through its own UI camera and shader accumulator after the HUD.
@@ -1101,12 +1139,12 @@ void drawWorldUI(IDirect3DDevice9* device){
 }
 void present(){
     auto now=GetTickCount64();frameDt=lastFrameTick?std::clamp(float(now-lastFrameTick)/1000.f,0.f,.05f):.016f;lastFrameTick=now;
-    bool gameplay=active();ownControls(gameplay);
+    bool gameplay=cursorActive();ownControls(cameraActive()&&gameMode()&&!dialogue());
     bool cameraOwned=cameraActive();updateLighting(cameraOwned);if(pipboyMode())restoreProjection();static bool previouslyActive{};
     if(cameraOwned!=previouslyActive&&!pendingActivation&&!pendingDisable){fadeAlpha=1;fadeHoldUntil=now+120;}previouslyActive=cameraOwned;
     float fadeGoal=((pendingActivation&&!areaPickup(reference(interactionId)))||pendingDisable||now<fadeHoldUntil)?1.f:0.f;
     float fadeStep=frameDt/.22f;fadeAlpha=fadeGoal>fadeAlpha?std::min(fadeGoal,fadeAlpha+fadeStep):std::max(fadeGoal,fadeAlpha-fadeStep);
-    if(!gameplay){closeContext();mouseDeltaX=0;mouseDeltaY=0;displayCamera.valid=false;wheelInput.reset();if(!pendingActivation)stop();}
+    if(!gameplay){closeContext();mouseDeltaX=0;mouseDeltaY=0;displayCamera.valid=false;wheelInput.reset();if(!pendingActivation&&!standWalkPending)stop();}
     cameraBlend=cameraOwned?1.f:0.f;
     pitch+=(desiredPitch-pitch)*(1-std::exp(-12.f*frameDt));
     yaw+=std::remainder(desiredYaw-yaw,360.f)*(1-std::exp(-12.f*frameDt));
@@ -1121,7 +1159,7 @@ void present(){
     width=nextWidth;height=nextHeight;
     overlayCamera=presentationCamera(renderCamera,renderTargetWidth,renderTargetHeight,width,height);
     if(bridgeImageVisible)overlayCamera=presentationCamera(bridgeVisibleCamera.camera,bridgeVisibleCamera.width,bridgeVisibleCamera.height,width,height);
-    if(active()){
+    if(cursorActive()){
         destinationMarker(device);
         float scale=hudPixelScale();LONG stroke=std::max(1L,LONG(std::lround(scale)));
         if(attack.ordered&&attack.id){float sx{},sy{};if(overlayCamera.project(attack.point,sx,sy)){
@@ -1180,14 +1218,21 @@ void onMessage(Message* m){
         }
         if(pendingDisable&&fadeAlpha>=.99f){pendingDisable=false;setEnabled(false);fadeHoldUntil=now+150;}
         if(startupScriptOwnsPlayer&&worldCameraArmed&&player()&&at<void*>(player(),0x40)&&at<void*>(player(),0x64)){
-            openingStage=int(number("GetStage VCG01"));
-            openingSequence=combat::openingOwnsPlayer(startedNewGame,number("GetQuestRunning VCG01")!=0,openingStage);
+            // TESQuest::currentStage and flags, xNVSE 1.4.0.525 ABI.
+            // A compiled expression can fail to resolve an editor ID and number()
+            // then returns zero, permanently trapping a new game at stage zero.
+            // Read VCG01 by its stable base-game form ID instead.
+            auto openingQuest=reference(0x00104C1C);
+            if(openingQuest){
+                openingStage=at<uint8_t>(openingQuest,0x60);
+                openingSequence=combat::openingOwnsPlayer(startedNewGame,(at<uint8_t>(openingQuest,0x3C)&1)!=0,openingStage);
+            }
             if(openingSequence){
                 // Also repairs saves captured with an older plugin during the intro.
                 startupScriptOwnsPlayer=true;setEnabled(false);closeContext();stop();hoverRef=0;markerUntil=0;
             }
             if(startupScriptOwnsPlayer&&combat::mayLeaveScriptedStartup(gameMode(),dialogue(),seated(),combat::nativeMovementLocked(nativeControlFlags()),openingSequence)){
-                startupScriptOwnsPlayer=false;log("Scripted startup finished; player movement available");
+                startupScriptOwnsPlayer=false;log("Scripted startup finished at opening stage "+std::to_string(openingStage)+"; player movement available");
                 startedNewGame=false;
             }
         }

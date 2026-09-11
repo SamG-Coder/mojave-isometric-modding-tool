@@ -7,6 +7,14 @@ using namespace context_menu;
 void check(bool ok,const char* message){if(!ok){std::cerr<<message<<"\n";std::exit(1);}}
 bool has(const std::vector<Row>& rows,Action a){for(auto& r:rows)if(r.action==a)return true;return false;}
 int main(){
+ check(availableReference(0x3C,2)&&availableReference(0x3B,2),"Actor rejected by taken-item flag");
+ check(!availableReference(0x3A,2),"Taken inventory reference offered again");
+ for(unsigned type:{0x3Au,0x3Bu,0x3Cu}){
+  check(!availableReference(type,0x20)&&!availableReference(type,0x800),"Deleted/disabled target accepted");
+ }
+ auto gecko=actions(0x2B,true,false,true);
+ check(!has(actions(0x2B,true,false,true,false),Action::Activate),"Unavailable creature still offers Search");
+ check(gecko[0].action==Action::Activate&&gecko[0].label=="Search"&&!has(gecko,Action::Attack),"Dead creature search unavailable");
  auto living=actions(0x2A,false,true,true);check(living.size()==6&&living[0].label=="Talk"&&has(living,Action::Attack)&&has(living,Action::Vats),"Living actor actions incorrect");
  for(auto& row:living)check(row.label!="Stop","Redundant Stop option remains");
  check(has(actions(0,false,false,false),Action::PickupArea),"Ground has no area pickup action");
